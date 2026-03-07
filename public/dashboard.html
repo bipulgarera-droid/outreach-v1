@@ -609,7 +609,7 @@
                                     <td class="px-4 py-3 text-gray-400 max-w-[200px] truncate" title="${(c.bio || '').replace(/"/g, '&quot;')}">${c.bio || '—'}</td>
                                     <td class="px-4 py-3 text-gray-300">${c.email || '<span class="text-gray-600">—</span>'}</td>
                                     <td class="px-4 py-3">${c.linkedin_url ? `<a href="${c.linkedin_url}" target="_blank" class="text-blue-400 hover:text-blue-300"><i data-lucide="linkedin" class="w-4 h-4 inline"></i></a>` : '<span class="text-gray-600">—</span>'}</td>
-                                    <td class="px-4 py-3 text-pink-400">${c.instagram ? `<a href="https://instagram.com/${c.instagram.replace('@', '')}" target="_blank" class="hover:underline hover:text-pink-300">${c.instagram}</a>` : '<span class="text-gray-600">—</span>'}</td>
+                                    <td class="px-4 py-3 text-pink-400">${c.instagram ? (c.instagram.startsWith('http') ? `<a href="${c.instagram}" target="_blank" class="hover:underline hover:text-pink-300">${c.instagram}</a>` : `<a href="https://instagram.com/${c.instagram.replace('@', '')}" target="_blank" class="hover:underline hover:text-pink-300">${c.instagram}</a>`) : '<span class="text-gray-500">—</span>'}</td>
                                     <td class="px-4 py-3"><span class="status-${c.status} text-xs px-2 py-1 rounded-full">${c.status}</span></td>
                                     <td class="px-4 py-3 text-right">
                                         <button onclick="showContactDetail('${c.id}')" class="text-gray-400 hover:text-white mr-2">

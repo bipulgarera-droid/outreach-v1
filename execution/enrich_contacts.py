@@ -143,8 +143,11 @@ def find_emails_serper(name: str, role_keyword: str = '', domain: str = None) ->
             
             extract_emails_from_serper_data(data, found_emails, seen_emails)
             
-            # If we already found emails for this person, we don't necessarily need to keep blasting queries
-            # but getting more candidates is better for fallback. Let's run all queries to maximize candidates.
+            # If we found valid emails from the primary broad search, no need to keep spamming targeted 
+            # domain searches which might pull in unrelated company emails like info@ or jobs@
+            if len(found_emails) > 0:
+                logger.info(f"    -> Found {len(found_emails)} emails, stopping further queries.")
+                break
             
         except Exception as e:
             logger.warning(f"Serper email search error for query '{query}': {e}")
