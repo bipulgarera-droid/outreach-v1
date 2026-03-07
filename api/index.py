@@ -798,6 +798,133 @@ def list_search_runs():
         return jsonify({'error': str(e)}), 500
 
 # =============================================================================
+# ROUTES — Import Leads from GrowthScout
+# =============================================================================
+
+@app.route('/api/import-leads', methods=['POST'])
+def import_leads():
+    """Import pre-enriched leads from GrowthScout into Outreach contacts.
+    
+    Expects JSON body:
+    {
+        "project_id": "uuid",
+        "leads": [
+            {
+                "name": "Business or Founder Name",
+                "email": "contact@example.com",
+                "company": "Business Name",
+                "linkedin": "https://linkedin.com/in/...",
+                "instagram": "@handle",
+                "phone": "123-456-7890",
+                "website": "https://example.com",
+                "category": "dentist",
+                "bio": "Analysis summary text",
+                "enrichment_data": { ... }
+            }
+        ]
+    }
+    
+    Contacts are inserted with status='enriched' so they skip the 
+    enrichment step and go directly to icebreaker generation.
+    """
+    try:
+        data = request.json
+        project_id = data.get('project_id')
+        leads = data.get('leads', [])
+        
+        if not project_id:
+            return jsonify({'error': 'project_id is required'}), 400
+        if not leads:
+            return jsonify({'error': 'No leads provided'}), 400
+        
+        # Verify project exists
+        project_check = supabase.table('projects').select('id').eq('id', project_id).execute()
+        if not project_check.data:
+            return jsonify({'error': f'Project {project_id} not found'}), 404
+        
+        # Fetch existing emails in this project for deduplication
+        existing = supabase.table('contacts').select('email').eq('project_id', project_id).execute()
+        existing_emails = set()
+        for row in (existing.data or []):
+            if row.get('email'):
+                existing_emails.add(row['email'].lower())
+        
+        imported = 0
+        skipped = 0
+        errors = 0
+        
+        contacts_to_insert = []
+        
+        for lead in leads:
+            email = (lead.get('email') or '').strip()
+            
+            # Skip leads without email — can't send outreach without one
+            if not email:
+                skipped += 1
+                continue
+            
+            # Deduplicate by email
+            if email.lower() in existing_emails:
+                skipped += 1
+                continue
+            existing_emails.add(email.lower())
+            
+            # Build enrichment_data JSON with all the extra GrowthScout data
+            enrichment = lead.get('enrichment_data', {})
+            if not isinstance(enrichment, dict):
+                enrichment = {}
+            
+            # Store GrowthScout-specific data in enrichment_data
+            enrichment['source_app'] = 'growthscout'
+            if lead.get('website'):
+                enrichment['website'] = lead['website']
+            if lead.get('phone'):
+                enrichment['phone'] = lead['phone']
+            if lead.get('pagespeed_mobile') is not None:
+                enrichment['pagespeed_mobile'] = lead['pagespeed_mobile']
+            if lead.get('pagespeed_desktop') is not None:
+                enrichment['pagespeed_desktop'] = lead['pagespeed_desktop']
+            if lead.get('audit_data'):
+                enrichment['audit_data'] = lead['audit_data']
+            if lead.get('analysis_bullets'):
+                enrichment['analysis_bullets'] = lead['analysis_bullets']
+            
+            contact = {
+                'project_id': project_id,
+                'name': lead.get('name', 'Unknown'),
+                'email': email,
+                'bio': lead.get('bio', ''),
+                'linkedin_url': lead.get('linkedin') or None,
+                'instagram': lead.get('instagram') or None,
+                'source': lead.get('category') or 'growthscout',
+                'status': 'enriched',  # Skip enrichment — already has email
+                'enrichment_data': json.dumps(enrichment),
+            }
+            
+            contacts_to_insert.append(contact)
+        
+        # Bulk insert in batches
+        batch_size = 500
+        for i in range(0, len(contacts_to_insert), batch_size):
+            batch = contacts_to_insert[i:i + batch_size]
+            try:
+                supabase.table('contacts').insert(batch).execute()
+                imported += len(batch)
+            except Exception as e:
+                logger.error(f"Batch insert error: {e}")
+                errors += len(batch)
+        
+        return jsonify({
+            'imported': imported,
+            'skipped': skipped,
+            'errors': errors,
+            'total_received': len(leads)
+        })
+    except Exception as e:
+        logger.error(f"Import leads error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# =============================================================================
 # SEED — Email Templates
 # =============================================================================
 
