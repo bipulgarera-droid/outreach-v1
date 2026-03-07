@@ -930,74 +930,103 @@ def import_leads():
 
 @app.route('/api/seed-templates', methods=['POST'])
 def seed_templates():
-    """Seed the 12-step drip email templates."""
+    """Seed 12-step drip email templates using Gemini AI based on the project description."""
     try:
         data = request.json or {}
         project_id = data.get('project_id')
         if not project_id: return jsonify({'error': 'project_id required'}), 400
-        templates = [
-            {
-                'step_number': 1,
-                'name': 'Logline Introduction',
-                'subject_template': 'A story I think you\'d connect with, {{first_name}}',
-                'body_template': '<p>Hi {{first_name}},</p><p>{{icebreaker}}</p><p>I\'m reaching out because I\'ve just completed an indie film that I believe aligns with your sensibilities. Here\'s the logline:</p><p><em>[Your logline here]</em></p><p>I\'d love to share more if this piques your interest. Would you be open to a brief conversation?</p><p>Warm regards,<br>[Your Name]</p>',
-                'delay_days': 0
-            },
-            {
-                'step_number': 2,
-                'name': 'Trailer Share',
-                'subject_template': 'The trailer is here — would love your eyes on it',
-                'body_template': '<p>Hi {{first_name}},</p><p>Following up on my previous note about our film. We just released the official trailer and I immediately thought of you.</p><p>🎬 <a href="[TRAILER_URL]">Watch the trailer here</a></p><p>The film explores [brief theme] through [unique angle]. I think it speaks to the kind of stories you champion.</p><p>Would love to hear your initial reaction.</p><p>Best,<br>[Your Name]</p>',
-                'delay_days': 3
-            },
-            {
-                'step_number': 3,
-                'name': 'Behind the Scenes',
-                'subject_template': 'The story behind making {{first_name}} — BTS peek',
-                'body_template': '<p>Hi {{first_name}},</p><p>I wanted to share something more personal — a behind-the-scenes look at the making of our film.</p><p>We shot over [X days] in [location], with a crew of [X people]. The biggest challenge was [brief challenge], but it\'s exactly what gives the film its authenticity.</p><p>Here are some exclusive BTS photos: [BTS_LINK]</p><p>I think the production story itself is worth telling. Happy to share more details if you\'re interested in covering the filmmaking journey.</p><p>Cheers,<br>[Your Name]</p>',
-                'delay_days': 5
-            },
-            {
-                'step_number': 4,
-                'name': 'Director\'s Vision',
-                'subject_template': 'Why I made this film — a director\'s note',
-                'body_template': '<p>Hi {{first_name}},</p><p>I\'ve been thinking about what compelled me to make this film, and I wanted to share that with you directly.</p><p>[2-3 sentences about the director\'s vision, what inspired the story, why it matters now]</p><p>I believe stories like this need voices like yours to help them reach the right audience. Would you be interested in a conversation about the film\'s themes?</p><p>With gratitude,<br>[Your Name]</p>',
-                'delay_days': 7
-            },
-            {
-                'step_number': 5,
-                'name': 'Press Kit & Stills',
-                'subject_template': 'Press kit + exclusive stills for you',
-                'body_template': '<p>Hi {{first_name}},</p><p>I\'ve put together a comprehensive press kit for easy reference:</p><ul><li>📋 Press Kit: [PRESS_KIT_LINK]</li><li>📸 Hi-res Production Stills: [STILLS_LINK]</li><li>🎬 Trailer: [TRAILER_LINK]</li><li>📝 Director\'s Statement</li></ul><p>Everything you\'d need if you decide to feature or review the film. No pressure at all — just wanted to make it easy for you.</p><p>Best,<br>[Your Name]</p>',
-                'delay_days': 10
-            },
-            {
-                'step_number': 6,
-                'name': 'Festival Selections',
-                'subject_template': 'Exciting news — festival selections!',
-                'body_template': '<p>Hi {{first_name}},</p><p>Wanted to share some exciting news — our film has been selected for [Festival Name(s)]!</p><p>The festival run begins [date/month], and I thought you might want to know ahead of the public announcement.</p><p>If you\'re attending or covering [Festival Name], I\'d love to arrange a screening or interview opportunity.</p><p>More details: [FESTIVAL_LINK]</p><p>Cheers,<br>[Your Name]</p>',
-                'delay_days': 14
-            },
-            {
-                'step_number': 7,
-                'name': 'Review Request',
-                'subject_template': 'Would you consider reviewing our film?',
-                'body_template': '<p>Hi {{first_name}},</p><p>I know your time is valuable, so I\'ll be direct — would you be open to watching and reviewing our film?</p><p>I can provide:</p><ul><li>🎥 Private screener link (your eyes only)</li><li>📋 Press notes and director Q&A</li><li>📸 Exclusive stills for your publication</li></ul><p>Your honest perspective would mean the world to our team. No obligation to write positively — we value authentic criticism.</p><p>Just say the word and I\'ll send the screener right over.</p><p>Respectfully yours,<br>[Your Name]</p>',
-                'delay_days': 18
-            },
-        ]
         
         # Check if templates already exist
         existing = supabase.table('email_templates').select('id', count='exact').eq('project_id', project_id).execute()
         if existing.count and existing.count > 0:
             return jsonify({'message': f'Templates already seeded ({existing.count} exist)', 'count': existing.count})
         
-        # Insert templates
-        for t in templates:
-            t['project_id'] = project_id
-            supabase.table('email_templates').insert(t).execute()
+        # Fetch the project to get its description
+        project = supabase.table('projects').select('name, description').eq('id', project_id).execute()
+        project_data = project.data[0] if project.data else {}
+        project_name = project_data.get('name', 'Outreach Campaign')
+        description = project_data.get('description', '')
         
-        return jsonify({'message': f'Seeded {len(templates)} email templates', 'count': len(templates)})
+        # Try Gemini AI generation first
+        templates_to_insert = []
+        if GEMINI_API_KEY and description:
+            try:
+                system = f"""You are an elite B2B and cold-email copywriter for a project named "{project_name}".
+                The project is described as: "{description}".
+                
+                Generate a full 12-step drip email sequence tailored to this exact business description.
+                Create exactly 12 steps. 
+                Keep the tone professional yet conversational.
+                You MUST return the output as a SINGLE VALID JSON ARRAY of exactly 12 objects.
+                Each object MUST have three exact keys: 
+                - "name" (a short internal name for the string, e.g. "Intro", "Follow up 1")
+                - "subject_template" (the email subject line)
+                - "body_template" (the email body)
+                
+                You may use these placeholder variables in curly braces: {{{{first_name}}}}, {{{{name}}}}, {{{{company}}}}, {{{{icebreaker}}}}.
+                The "delay_days" will be calculated automatically by the system, just focus on the content.
+                Ensure step 1 is a strong introduction and MUST logically include the exact text "{{{{icebreaker}}}}" somewhere in its body_template to seamlessly inject our pre-researched personalized intro. Steps 2-12 should be polite follow-ups, value adds, case studies, or break-up emails.
+                Return ONLY the raw JSON array. Do not wrap it in markdown block quotes."""
+                
+                client = genai.Client(api_key=GEMINI_API_KEY)
+                response = client.models.generate_content(
+                    model='gemini-2.5-pro',
+                    contents=system,
+                )
+                
+                content = response.text.strip()
+                if '```json' in content: content = content.split('```json')[1].split('```')[0].strip()
+                elif '```' in content: content = content.split('```')[1].split('```')[0].strip()
+                
+                steps = json.loads(content)
+                
+                delays = [0, 3, 5, 7, 10, 14, 21, 30, 45, 60, 90, 120]
+                
+                for i, step in enumerate(steps[:12]):
+                    templates_to_insert.append({
+                        'project_id': project_id,
+                        'name': step.get('name', f'Step {i+1}'),
+                        'step_number': i + 1,
+                        'subject_template': step.get('subject_template', f'Follow up {i}'),
+                        'body_template': step.get('body_template', 'Placeholder body'),
+                        'delay_days': delays[i] if i < len(delays) else 30
+                    })
+                    
+            except Exception as ai_e:
+                logger.error(f"Gemini template generation failed: {ai_e}")
+                templates_to_insert = []  # Fall through to fallback
+        
+        # Fallback: generic 12-step sequence if Gemini fails or no description
+        if not templates_to_insert:
+            delays = [0, 3, 5, 7, 10, 14, 21, 30, 45, 60, 90, 120]
+            fallback_steps = [
+                {'name': 'Introduction', 'subject_template': 'Quick intro, {{first_name}}', 'body_template': 'Hi {{first_name}},\n\n{{icebreaker}}\n\nI wanted to reach out because I think there could be a great fit between what we do and what you\'re working on.\n\nWould you be open to a brief chat this week?\n\nBest,\n[Your Name]'},
+                {'name': 'Follow Up 1', 'subject_template': 'Following up on my note', 'body_template': 'Hi {{first_name}},\n\nJust circling back on my previous email. I know how busy things get.\n\nI\'d love to share a quick overview of how we might help. Would 15 minutes work this week?\n\nCheers,\n[Your Name]'},
+                {'name': 'Value Add', 'subject_template': 'Thought you\'d find this useful', 'body_template': 'Hi {{first_name}},\n\nI came across something relevant to what you\'re doing and thought I\'d share it.\n\n[Insert relevant insight, article, or case study]\n\nNo strings attached — just thought of you.\n\nBest,\n[Your Name]'},
+                {'name': 'Case Study', 'subject_template': 'How [similar company] achieved [result]', 'body_template': 'Hi {{first_name}},\n\nI wanted to share a quick success story that might resonate with you.\n\n[Brief case study: challenge → solution → result]\n\nI think we could achieve something similar for your team. Worth a conversation?\n\nCheers,\n[Your Name]'},
+                {'name': 'Different Angle', 'subject_template': 'Different approach for {{first_name}}', 'body_template': 'Hi {{first_name}},\n\nI realize my previous emails might not have hit the mark, so let me try a different angle.\n\n[New value proposition or benefit]\n\nIs this more relevant to what you\'re currently focused on?\n\nBest,\n[Your Name]'},
+                {'name': 'Social Proof', 'subject_template': 'Others in your space are seeing results', 'body_template': 'Hi {{first_name}},\n\nJust wanted to mention that several teams similar to yours have been seeing great results with our approach.\n\n[Brief testimonial or stat]\n\nHappy to walk you through the specifics if you\'re curious.\n\nCheers,\n[Your Name]'},
+                {'name': 'Quick Question', 'subject_template': 'Quick question, {{first_name}}', 'body_template': 'Hi {{first_name}},\n\nI have a quick question — are you currently looking to [improve X / solve Y / grow Z]?\n\nIf so, I have some ideas I\'d love to share. If not, no worries at all.\n\nBest,\n[Your Name]'},
+                {'name': 'Insight Share', 'subject_template': 'An insight about [industry trend]', 'body_template': 'Hi {{first_name}},\n\nI\'ve been noticing an interesting trend in your space and thought you might find this relevant.\n\n[Industry insight or trend observation]\n\nWould love to discuss how this might impact what you\'re working on.\n\nCheers,\n[Your Name]'},
+                {'name': 'Direct Ask', 'subject_template': 'Can we chat this week?', 'body_template': 'Hi {{first_name}},\n\nI\'ll be direct — I think a 15-minute conversation could be really valuable for both of us.\n\nI\'ve done my research on what you\'re building, and I have some specific ideas I\'d like to share.\n\nWould [Day 1] or [Day 2] work for a quick call?\n\nBest,\n[Your Name]'},
+                {'name': 'Final Value', 'subject_template': 'One last thing before I go', 'body_template': 'Hi {{first_name}},\n\nI don\'t want to be that person who keeps emailing, so I\'ll keep this brief.\n\n[One compelling reason / final value point]\n\nIf the timing isn\'t right, I completely understand. But if things change, my door is always open.\n\nWishing you the best,\n[Your Name]'},
+                {'name': 'Breakup Email', 'subject_template': 'Should I close your file?', 'body_template': 'Hi {{first_name}},\n\nI haven\'t heard back, so I\'m guessing the timing isn\'t right. Totally understandable.\n\nI\'ll close out your file on my end, but if things change in the future, feel free to reach out anytime.\n\nWishing you continued success,\n[Your Name]'},
+                {'name': 'Reopen', 'subject_template': 'Checking in, {{first_name}}', 'body_template': 'Hi {{first_name}},\n\nIt\'s been a while since we last connected. A lot has changed on our end and I thought it might be worth reconnecting.\n\n[Brief update on what\'s new]\n\nIs now a better time to chat?\n\nBest,\n[Your Name]'},
+            ]
+            for i, step in enumerate(fallback_steps):
+                templates_to_insert.append({
+                    'project_id': project_id,
+                    'name': step['name'],
+                    'step_number': i + 1,
+                    'subject_template': step['subject_template'],
+                    'body_template': step['body_template'],
+                    'delay_days': delays[i] if i < len(delays) else 30
+                })
+        
+        # Insert all templates
+        supabase.table('email_templates').insert(templates_to_insert).execute()
+        
+        return jsonify({'message': f'Generated {len(templates_to_insert)} email templates', 'count': len(templates_to_insert)})
     except Exception as e:
         logger.error(f"Seed error: {e}")
         return jsonify({'error': str(e)}), 500

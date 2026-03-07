@@ -243,6 +243,13 @@
             const isGet = !options.method || options.method === 'GET';
             let finalUrl = url;
 
+            // Auto-set Content-Type for non-GET requests
+            if (!isGet && !options.headers) {
+                options.headers = { 'Content-Type': 'application/json' };
+            } else if (!isGet && options.headers && !options.headers['Content-Type']) {
+                options.headers['Content-Type'] = 'application/json';
+            }
+
             if (currentProjectId) {
                 if (isGet) {
                     finalUrl += (url.includes('?') ? '&' : '?') + 'project_id=' + currentProjectId;
@@ -918,7 +925,7 @@
                     <div class="flex flex-col items-center justify-center h-64 text-center">
                         <i data-lucide="file-text" class="w-12 h-12 text-gray-600 mb-4"></i>
                         <h3 class="text-lg font-semibold text-white mb-2">No Templates Yet</h3>
-                        <p class="text-gray-400 mb-4">Seed the 7-step drip sequence templates to get started.</p>
+                        <p class="text-gray-400 mb-4">Seed the 12-step drip sequence templates to get started.</p>
                         <button onclick="seedTemplates()" class="bg-violet-600 hover:bg-violet-500 text-white px-4 py-2 rounded-lg text-sm font-medium">
                             Seed Default Templates
                         </button>
