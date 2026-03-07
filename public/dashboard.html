@@ -558,6 +558,9 @@
                     <button onclick="runIcebreakers()" class="bg-violet-500/20 text-violet-400 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 hover:bg-violet-500/30">
                         <i data-lucide="message-square" class="w-3.5 h-3.5"></i> Icebreakers
                     </button>
+                    <button onclick="createSequencesForSelected()" class="bg-indigo-500/20 text-indigo-400 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 hover:bg-indigo-500/30 ml-2">
+                        <i data-lucide="mail-plus" class="w-3.5 h-3.5"></i> Sequence
+                    </button>
                     <button onclick="deleteSelectedContacts()" class="bg-red-500/20 text-red-400 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 hover:bg-red-500/30 ml-2">
                         <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Delete
                     </button>
@@ -642,9 +645,6 @@
             window.latestSequences = sequences;
 
             actions.innerHTML = `
-                <button onclick="createSequencesForSelected()" class="bg-violet-600 hover:bg-violet-500 text-white px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5">
-                    <i data-lucide="plus" class="w-4 h-4"></i> Create Sequences
-                </button>
             `;
 
             // Group sequences by contact
@@ -959,15 +959,15 @@
         }
 
         async function generateTemplateAI(id, stepNumber) {
-            const prompt = prompt('What should this email step be about? (e.g. "A polite follow-up asking if they watched the trailer")\\n\\nNote: Generating uses the Perplexity API.');
-            if (!prompt) return;
+            const userPrompt = window.prompt('What should this email step be about? (e.g. "A polite follow-up asking if they watched the trailer")\\n\\nNote: Generating uses the Perplexity API.');
+            if (!userPrompt) return;
 
             showToast('🪄 AI is writing the template...');
             try {
                 const res = await apiFetch('/api/templates/generate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ prompt: prompt + " This is step " + stepNumber + " in the sequence." })
+                    body: JSON.stringify({ prompt: userPrompt + " This is step " + stepNumber + " in the sequence." })
                 });
                 const data = await res.json();
                 if (data.error) throw new Error(data.error);
