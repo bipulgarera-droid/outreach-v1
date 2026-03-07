@@ -66,69 +66,114 @@ def guess_role_keyword(contact: dict) -> str:
     return ''
 
 
-def find_emails_serper(name: str, role_keyword: str = '') -> list[str]:
-    """
-    Find email addresses by searching Google via Serper.
-    Uses unquoted name + role keyword + 'email' to get broad results.
-    Returns ALL valid emails found across the top 10 results.
-    """
-    if not SERPER_API_KEY:
-        return []
-    
+def extract_domain_serper(company_name: str) -> str | None:
+    """Find the official website domain for a company using Serper."""
+    if not SERPER_API_KEY or not company_name:
+        return None
+        
     try:
         headers = {
             'X-API-KEY': SERPER_API_KEY,
             'Content-Type': 'application/json'
         }
+        # Dork to find official website, excluding linkedin
+        query = f'"{company_name}" ("official website" OR site OR .com OR .org OR .io) -inurl:linkedin'
+        payload = {'q': query, 'num': 3}
         
-        # Build query: name (unquoted) + role keyword + email
-        query_parts = [name]
-        if role_keyword:
-            query_parts.append(role_keyword)
-        query_parts.append('email')
-        query = ' '.join(query_parts)
-        
-        payload = {
-            'q': query,
-            'num': 10
-        }
-        
-        logger.info(f"  Email search query: {query}")
         response = requests.post(SERPER_URL, headers=headers, json=payload, timeout=15)
         data = response.json()
         
-        found_emails = []
-        seen_emails = set()
-        
-        # Check AI snippet / knowledge graph first (Google's AI answer)
-        ai_snippet = data.get('answerBox', {}).get('snippet', '') or ''
-        ai_answer = data.get('answerBox', {}).get('answer', '') or ''
-        knowledge_desc = data.get('knowledgeGraph', {}).get('description', '') or ''
-        
-        for text_block in [ai_snippet, ai_answer, knowledge_desc]:
-            emails = re.findall(r'[\w.+-]+@[\w-]+\.[\w.-]+', text_block)
-            for email in emails:
-                email_lower = email.lower()
-                if email_lower not in seen_emails and _is_valid_email(email_lower):
-                    found_emails.append(email)
-                    seen_emails.add(email_lower)
-        
-        # Scan organic results
         for result in data.get('organic', []):
-            text = f"{result.get('title', '')} {result.get('snippet', '')}"
-            emails = re.findall(r'[\w.+-]+@[\w-]+\.[\w.-]+', text)
-            for email in emails:
-                email_lower = email.lower()
-                if email_lower not in seen_emails and _is_valid_email(email_lower):
-                    found_emails.append(email)
-                    seen_emails.add(email_lower)
-        
-        return found_emails
-        
+            url = result.get('link', '')
+            # Extract domain from url
+            match = re.search(r'https?://(?:www\.)?([^/]+)', url)
+            if match:
+                domain = match.group(1).lower()
+                # Skip known directories/socials
+                if not any(skip in domain for skip in ['facebook', 'instagram', 'twitter', 'wikipedia', 'imdb']):
+                    return domain
     except Exception as e:
-        logger.warning(f"Serper email search error for {name}: {e}")
+        logger.warning(f"Domain extraction error for {company_name}: {e}")
+    return None
+
+
+def find_emails_serper(name: str, role_keyword: str = '', domain: str = None) -> list[str]:
+    """
+    Find email addresses by searching Google via Serper.
+    Runs multiple targeted dorks based on available info.
+    Returns ALL valid emails found across results.
+    """
+    if not SERPER_API_KEY:
+        return []
     
-    return []
+    found_emails = []
+    seen_emails = set()
+    
+    queries_to_run = []
+    
+    # 1. Broad search: name + role + email
+    broad_parts = [name]
+    if role_keyword:
+        broad_parts.append(role_keyword)
+    broad_parts.append('email')
+    queries_to_run.append(' '.join(broad_parts))
+    
+    # 2. Domain-specific searches
+    if domain:
+        # e.g., site:sundance.org "John Doe" email
+        queries_to_run.append(f'site:{domain} "{name}" email')
+        # e.g., site:sundance.org contact OR email
+        queries_to_run.append(f'site:{domain} contact OR email')
+        # e.g., "John Doe" "@sundance.org"
+        queries_to_run.append(f'"{name}" "@{domain}"')
+    
+    headers = {
+        'X-API-KEY': SERPER_API_KEY,
+        'Content-Type': 'application/json'
+    }
+    
+    for query in queries_to_run:
+        try:
+            payload = {'q': query, 'num': 10}
+            logger.info(f"  Email search query: {query}")
+            
+            response = requests.post(SERPER_URL, headers=headers, json=payload, timeout=15)
+            data = response.json()
+            
+            extract_emails_from_serper_data(data, found_emails, seen_emails)
+            
+            # If we already found emails for this person, we don't necessarily need to keep blasting queries
+            # but getting more candidates is better for fallback. Let's run all queries to maximize candidates.
+            
+        except Exception as e:
+            logger.warning(f"Serper email search error for query '{query}': {e}")
+    
+    return found_emails
+
+def extract_emails_from_serper_data(data: dict, found_emails: list, seen_emails: set):
+    """Helper to regex emails out of Serper JSON response."""
+    # Check AI snippet / knowledge graph first (Google's AI answer)
+    ai_snippet = data.get('answerBox', {}).get('snippet', '') or ''
+    ai_answer = data.get('answerBox', {}).get('answer', '') or ''
+    knowledge_desc = data.get('knowledgeGraph', {}).get('description', '') or ''
+    
+    for text_block in [ai_snippet, ai_answer, knowledge_desc]:
+        emails = re.findall(r'[\w.+-]+@[\w-]+\.[\w.-]+', text_block)
+        for email in emails:
+            email_lower = email.lower()
+            if email_lower not in seen_emails and _is_valid_email(email_lower):
+                found_emails.append(email)
+                seen_emails.add(email_lower)
+    
+    # Scan organic results
+    for result in data.get('organic', []):
+        text = f"{result.get('title', '')} {result.get('snippet', '')}"
+        emails = re.findall(r'[\w.+-]+@[\w-]+\.[\w.-]+', text)
+        for email in emails:
+            email_lower = email.lower()
+            if email_lower not in seen_emails and _is_valid_email(email_lower):
+                found_emails.append(email)
+                seen_emails.add(email_lower)
 
 
 def _is_valid_email(email: str) -> bool:
@@ -206,6 +251,7 @@ def enrich_single_contact(contact: dict) -> dict:
     """
     name = contact.get('name', '')
     role_keyword = guess_role_keyword(contact)
+    company_name = contact.get('company') or contact.get('source') or ''
     
     updates = {
         'enrichment_data': {},
@@ -213,12 +259,20 @@ def enrich_single_contact(contact: dict) -> dict:
         'updated_at': datetime.utcnow().isoformat()
     }
     
-    # 1. Find emails via Serper (may return multiple)
-    emails = find_emails_serper(name, role_keyword)
+    # 1. Extract domain
+    domain = None
+    if company_name:
+        domain = extract_domain_serper(company_name)
+        if domain:
+            updates['enrichment_data']['company_domain'] = domain
+            logger.info(f"  Extracted domain: {domain}")
+    
+    # 2. Find emails via Serper (runs broad + domain-specific queries)
+    emails = find_emails_serper(name, role_keyword, domain)
     if emails:
         # Store the first email as primary, all candidates in enrichment_data
         updates['email'] = emails[0]
-        updates['enrichment_data']['email_source'] = 'serper'
+        updates['enrichment_data']['email_source'] = 'serper_enhanced'
         updates['enrichment_data']['email_candidates'] = emails
         logger.info(f"  Found {len(emails)} email(s): {emails}")
     
@@ -234,16 +288,14 @@ def enrich_single_contact(contact: dict) -> dict:
     return updates
 
 
-def enrich_contacts(limit: int = 50, dry_run: bool = False) -> dict:
+def enrich_contacts(limit: int = 50, contact_ids: list = None, dry_run: bool = False) -> dict:
     """
     Enrich contacts in batch.
     
     Args:
         limit: Max contacts to enrich per run
+        contact_ids: Optional list of specific contact IDs to enrich (bypasses status='new' check)
         dry_run: If True, don't update Supabase
-    
-    Returns:
-        Stats dict: {processed, emails_found, ig_found, errors}
     """
     from supabase import create_client
     
@@ -257,7 +309,13 @@ def enrich_contacts(limit: int = 50, dry_run: bool = False) -> dict:
     supabase = create_client(supabase_url, supabase_key)
     
     # Fetch contacts needing enrichment
-    result = supabase.table('contacts').select('*').eq('status', 'new').limit(limit).execute()
+    query = supabase.table('contacts').select('*')
+    if contact_ids and len(contact_ids) > 0:
+        query = query.in_('id', contact_ids)
+    else:
+        query = query.eq('status', 'new').limit(limit)
+        
+    result = query.execute()
     contacts = result.data or []
     
     logger.info(f"Found {len(contacts)} contacts to enrich")

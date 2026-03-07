@@ -345,13 +345,14 @@ def trigger_search():
 
 @app.route('/api/contacts/enrich', methods=['POST'])
 def trigger_enrichment():
-    """Trigger email/IG enrichment for pending contacts."""
+    """Trigger email/IG enrichment for pending (or selected) contacts."""
     try:
         data = request.json or {}
         limit = data.get('limit', 50)
+        contact_ids = data.get('contact_ids', [])
         
         from execution.enrich_contacts import enrich_contacts
-        stats = enrich_contacts(limit=limit)
+        stats = enrich_contacts(limit=limit, contact_ids=contact_ids)
         
         return jsonify(stats)
     except Exception as e:

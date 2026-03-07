@@ -1429,10 +1429,15 @@
         }
 
         async function runEnrichment() {
-            if (!confirm('Enrich pending contacts with emails and Instagram? This uses Serper API credits.')) return;
+            const selectedIds = getSelectedContactIds();
+            const msg = selectedIds.length > 0
+                ? `Enrich ${selectedIds.length} selected contact(s) with emails and Instagram? This uses Serper API credits.`
+                : 'Enrich up to 50 pending contacts with emails and Instagram? This uses Serper API credits.';
+            if (!confirm(msg)) return;
             showToast('Starting enrichment...');
             try {
-                const res = await apiFetch('/api/contacts/enrich', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"limit":50}' });
+                const body = JSON.stringify({ limit: 50, contact_ids: selectedIds });
+                const res = await apiFetch('/api/contacts/enrich', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
                 const data = await res.json();
                 showToast(`✅ Enriched ${data.processed} contacts: ${data.emails_found} emails, ${data.ig_found} IGs found`);
                 loadContent();
