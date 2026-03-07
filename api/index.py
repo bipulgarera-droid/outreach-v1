@@ -544,6 +544,16 @@ def paraphrase_text(text: str, context: dict = None) -> str:
                 contact_info += f"Their Bio/LinkedIn Summary: {context['bio']}\n"
             if context.get('icebreaker'):
                 contact_info += f"Our previous specific Icebreaker for them: {context['icebreaker']}\n"
+            # LinkedIn enrichment data for richer personalization
+            if context.get('linkedin_headline'):
+                contact_info += f"Their LinkedIn Headline: {context['linkedin_headline']}\n"
+            if context.get('linkedin_company'):
+                contact_info += f"Their Current Company: {context['linkedin_company']}\n"
+            if context.get('linkedin_title'):
+                contact_info += f"Their Current Title: {context['linkedin_title']}\n"
+            if context.get('linkedin_about'):
+                about_snippet = context['linkedin_about'][:800]
+                contact_info += f"Their LinkedIn About: {about_snippet}\n"
             contact_info += "\nIf appropriate and highly relevant, weave a brief, natural reference to their background or company into the paraphrased text to make the follow-up hyper-personalized. DO NOT hallucinate facts, guess their current challenges, or assume things not explicitly stated in their bio or the icebreaker. Stick strictly to the provided facts."
 
         system = f"""You are an expert copywriter. Paraphrase the following email body to avoid spam filters.
@@ -595,6 +605,17 @@ def create_sequences():
         for contact in (contacts.data or []):
             base_date = datetime.utcnow()
             
+            # Parse enrichment_data for LinkedIn fields
+            enrichment_data = contact.get('enrichment_data')
+            if isinstance(enrichment_data, str):
+                try:
+                    import json as _json
+                    enrichment_data = _json.loads(enrichment_data)
+                except Exception:
+                    enrichment_data = {}
+            elif not isinstance(enrichment_data, dict):
+                enrichment_data = {}
+            
             for template in templates.data:
                 # Render template with contact variables
                 variables = {
@@ -602,6 +623,11 @@ def create_sequences():
                     'first_name': contact.get('name', 'there').split()[0],
                     'bio': contact.get('bio', ''),
                     'icebreaker': contact.get('icebreaker', ''),
+                    # LinkedIn enrichment fields for paraphraser context
+                    'linkedin_headline': enrichment_data.get('linkedin_headline', ''),
+                    'linkedin_company': enrichment_data.get('linkedin_company', ''),
+                    'linkedin_title': enrichment_data.get('linkedin_title', ''),
+                    'linkedin_about': enrichment_data.get('linkedin_about', ''),
                 }
                 
                 subject = template['subject_template']

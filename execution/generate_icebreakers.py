@@ -33,7 +33,7 @@ PERPLEXITY_API_KEY = os.getenv('PERPLEXITY_API_KEY')
 PERPLEXITY_URL = 'https://api.perplexity.ai/chat/completions'
 
 
-def generate_icebreaker(name: str, bio: str, linkedin_url: str = None) -> str | None:
+def generate_icebreaker(name: str, bio: str, linkedin_url: str = None, enrichment_data: dict = None) -> str | None:
     """
     Generate a personalized icebreaker using Perplexity API.
     
@@ -41,6 +41,7 @@ def generate_icebreaker(name: str, bio: str, linkedin_url: str = None) -> str | 
         name: Contact's full name
         bio: Their bio/description
         linkedin_url: Optional LinkedIn profile for context
+        enrichment_data: Optional dict with LinkedIn-scraped profile fields
     
     Returns:
         Icebreaker string or None on error
@@ -54,6 +55,21 @@ def generate_icebreaker(name: str, bio: str, linkedin_url: str = None) -> str | 
         context += f"\nBio: {bio}"
     if linkedin_url:
         context += f"\nLinkedIn: {linkedin_url}"
+    
+    # Add rich LinkedIn data if available
+    if enrichment_data:
+        if enrichment_data.get('linkedin_headline'):
+            context += f"\nLinkedIn Headline: {enrichment_data['linkedin_headline']}"
+        if enrichment_data.get('linkedin_company'):
+            context += f"\nCurrent Company: {enrichment_data['linkedin_company']}"
+        if enrichment_data.get('linkedin_title'):
+            context += f"\nCurrent Title: {enrichment_data['linkedin_title']}"
+        if enrichment_data.get('linkedin_about'):
+            # Truncate very long bios to avoid blowing up the token limit
+            about = enrichment_data['linkedin_about'][:1500]
+            context += f"\nLinkedIn About: {about}"
+        if enrichment_data.get('linkedin_location'):
+            context += f"\nLocation: {enrichment_data['linkedin_location']}"
     
     prompt = f"""Generate a 1-2 sentence heavily personalized icebreaker for cold emailing this person.
 The icebreaker MUST observe or compliment something specific about their CURRENT job, current company, or most recent publicly shared achievement. 
@@ -141,10 +157,21 @@ def generate_icebreakers_batch(limit: int = 50, dry_run: bool = False) -> dict:
         try:
             logger.info(f"[{i+1}/{len(contacts)}] Generating for: {contact['name']}")
             
+            # Parse enrichment_data JSON if available
+            enrichment_data = contact.get('enrichment_data')
+            if isinstance(enrichment_data, str):
+                try:
+                    enrichment_data = json.loads(enrichment_data)
+                except (json.JSONDecodeError, TypeError):
+                    enrichment_data = {}
+            elif not isinstance(enrichment_data, dict):
+                enrichment_data = {}
+            
             icebreaker = generate_icebreaker(
                 name=contact['name'],
                 bio=contact.get('bio', ''),
-                linkedin_url=contact.get('linkedin_url', '')
+                linkedin_url=contact.get('linkedin_url', ''),
+                enrichment_data=enrichment_data
             )
             
             if icebreaker:

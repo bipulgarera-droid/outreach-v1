@@ -164,6 +164,62 @@ def scrape_linkedin_apify(username_slug: str) -> dict:
     return result
 
 
+def scrape_contact_page_apify(domain: str) -> list:
+    """
+    Use vdrmota/contact-info-scraper to crawl a company website's contact page
+    and extract email addresses.
+    
+    Args:
+        domain: Company domain (e.g. 'sundance.org')
+    
+    Returns:
+        List of email addresses found
+    """
+    if not APIFY_API_KEY or not ApifyClient or not domain:
+        return []
+    
+    try:
+        client = ApifyClient(APIFY_API_KEY)
+        
+        # Build URLs to scrape — the main domain and common contact pages
+        start_urls = [
+            {'url': f'https://{domain}'},
+            {'url': f'https://{domain}/contact'},
+            {'url': f'https://{domain}/about'},
+            {'url': f'https://www.{domain}/contact'},
+        ]
+        
+        run_input = {
+            'startUrls': start_urls,
+            'maxDepth': 1,
+            'maxRequestsPerStartUrl': 3,
+            'sameDomain': True,
+        }
+        
+        logger.info(f"  Apify: scraping contact page for domain '{domain}'...")
+        run = client.actor('vdrmota/contact-info-scraper').call(run_input=run_input, timeout_secs=120)
+        
+        emails = []
+        seen = set()
+        for item in client.dataset(run['defaultDatasetId']).iterate_items():
+            for email in item.get('emails', []):
+                email_lower = email.lower()
+                if email_lower not in seen and _is_valid_email(email_lower):
+                    emails.append(email)
+                    seen.add(email_lower)
+        
+        if emails:
+            logger.info(f"  Apify contact scraper found {len(emails)} email(s): {emails}")
+        else:
+            logger.info(f"  Apify contact scraper: no emails found on {domain}")
+        
+        return emails
+        
+    except Exception as e:
+        logger.warning(f"  Apify contact scraper error for '{domain}': {e}")
+        return []
+
+
 def extract_domain_serper(company_name: str) -> Optional[str]:
     """Find the official website domain for a company using Serper."""
     if not SERPER_API_KEY or not company_name:
@@ -411,6 +467,15 @@ def enrich_single_contact(contact: dict) -> dict:
             updates['enrichment_data']['email_source'] = 'serper_enhanced'
             updates['enrichment_data']['email_candidates'] = emails
             logger.info(f"  Found {len(emails)} email(s) via Serper: {emails}")
+    
+    # ── Step 2.5: Apify Contact Page Scraper (last resort for email) ───────
+    if not updates.get('email') and domain:
+        page_emails = scrape_contact_page_apify(domain)
+        if page_emails:
+            updates['email'] = page_emails[0]
+            updates['enrichment_data']['email_source'] = 'apify_contact_page'
+            updates['enrichment_data']['email_candidates'] = page_emails
+            logger.info(f"  Found {len(page_emails)} email(s) via contact page scraper: {page_emails}")
     
     # ── Step 3: Instagram via Serper ───────────────────────────────────────
     instagram = find_instagram_serper(name, role_keyword)
