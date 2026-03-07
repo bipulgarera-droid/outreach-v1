@@ -178,15 +178,18 @@ def find_instagram_serper(name: str, role_keyword: str = '') -> str | None:
         
         for result in data.get('organic', []):
             url = result.get('link', '')
-            # Extract the first path segment from any instagram.com URL
-            # This works for profiles, posts, reels:
-            #   instagram.com/jakartafilmweek          -> jakartafilmweek
-            #   instagram.com/jakartafilmweek/p/ABC123 -> jakartafilmweek
-            #   instagram.com/shrutiparekh/reel/XYZ    -> shrutiparekh
+            
+            # If it's a post or reel, return the full URL instead of the poster's handle
+            # (since the prospect is likely just tagged in the caption)
+            if '/p/' in url or '/reel/' in url or '/tv/' in url:
+                return url
+                
+            # Otherwise, extract the profile handle
             match = re.search(r'instagram\.com/([a-zA-Z0-9_.]+)', url)
             if match:
                 handle = match.group(1)
-                if handle.lower() not in skip_handles:
+                # Filter out generic Instagram pages
+                if handle.lower() not in skip_handles and handle.lower() not in ['p', 'reel', 'tv']:
                     return f"@{handle}"
     except Exception as e:
         logger.warning(f"Instagram search error for {name}: {e}")
