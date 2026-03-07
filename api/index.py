@@ -123,7 +123,7 @@ def create_project():
                 
                 You may use these placeholder variables in curly braces: {{{{first_name}}}}, {{{{name}}}}, {{{{company}}}}, {{{{icebreaker}}}}.
                 The "delay_days" will be calculated automatically by the system, just focus on the content.
-                Ensure step 1 is a strong introduction. Steps 2-12 should be polite follow-ups, value adds, case studies, or break-up emails.
+                Ensure step 1 is a strong introduction and MUST logically include the exact text "{{{{icebreaker}}}}" somewhere in its body_template to seamlessly inject our pre-researched personalized intro. Steps 2-12 should be polite follow-ups, value adds, case studies, or break-up emails.
                 Return ONLY the raw JSON array. Do not wrap it in markdown block quotes."""
                 
                 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -523,14 +523,24 @@ def update_sequence(sequence_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-def paraphrase_text(text: str) -> str:
-    """Use Gemini to paraphrase a text while preserving variables."""
+def paraphrase_text(text: str, context: dict = None) -> str:
+    """Use Gemini to paraphrase a text while preserving variables, using prospect context if provided."""
     if not GEMINI_API_KEY:
         return text
     try:
-        system = """You are an expert copywriter. Paraphrase the following email body to avoid spam filters.
-        Keep the exact same meaning, tone, and length, but change about 15-20% of the word choices.
-        CRITICAL: If you see raw variables like {{name}}, {{first_name}}, {{icebreaker}}, {{bio}}, or any other bracketed texts, YOU MUST LEAVE THEM EXACTLY AS THEY ARE.
+        contact_info = ""
+        if context:
+            contact_info = f"\n\nPROSPECT CONTEXT:\nYou are emailing {context.get('name', 'someone')}.\n"
+            if context.get('bio'):
+                contact_info += f"Their Bio/LinkedIn Summary: {context['bio']}\n"
+            if context.get('icebreaker'):
+                contact_info += f"Our previous specific Icebreaker for them: {context['icebreaker']}\n"
+            contact_info += "\nIf appropriate and highly relevant, weave a brief, natural reference to their background or company into the paraphrased text to make the follow-up hyper-personalized. DO NOT hallucinate facts, guess their current challenges, or assume things not explicitly stated in their bio or the icebreaker. Stick strictly to the provided facts."
+
+        system = f"""You are an expert copywriter. Paraphrase the following email body to avoid spam filters.
+        Keep the exact same meaning, tone, and roughly the same length, but change about 15-20% of the word choices.{contact_info}
+        
+        CRITICAL: If you see raw variables like {{{{name}}}}, {{{{first_name}}}}, {{{{icebreaker}}}}, {{{{bio}}}}, or any other bracketed texts, YOU MUST LEAVE THEM EXACTLY AS THEY ARE.
         CRITICAL INSTRUCTIONS:
         1. NEVER include academic citations, footnotes, or bracketed numbers like [1] or [2] in your response.
         2. DO NOT use HTML tags like <p> or <br>. Use standard text line breaks if needed.
@@ -590,7 +600,7 @@ def create_sequences():
                 
                 # AI Paraphrase for follow-up steps (Step 2+) to avoid spam filters
                 if template['step_number'] > 1:
-                    body = paraphrase_text(body)
+                    body = paraphrase_text(body, context=variables)
                 
                 for key, val in variables.items():
                     subject = subject.replace(f'{{{{{key}}}}}', val)
