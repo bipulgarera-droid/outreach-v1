@@ -253,7 +253,7 @@ def trigger_search():
         from execution.scrape_contacts import extract_and_store_contacts
         
         # Run search
-        results = run_search_pipeline(queries, num_results)
+        results = run_search_pipeline(queries, num_results, project_id=project_id)
         
         # Extract and store contacts
         all_stats = {'total_results': len(results), 'inserted': 0, 'skipped': 0, 'errors': 0}

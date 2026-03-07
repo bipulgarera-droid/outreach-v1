@@ -224,7 +224,8 @@ def parse_search_results(results: list[dict], source_query: str = '') -> list[di
         elif is_any_linkedin_url(link):
             # It's a LinkedIn post/article — still try to extract name
             name = extract_name_from_linkedin(title)
-            linkedin_url = None  # Don't store non-profile URLs as the profile link
+            # Store the post URL anyway so it's not blank, user can still click it
+            linkedin_url = link
         else:
             name = title.split(' - ')[0].split(' | ')[0].strip()
             linkedin_url = None
