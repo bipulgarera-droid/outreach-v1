@@ -605,43 +605,61 @@
         function renderSnapshotList(title, icon, iconColor, steps, channel) {
             if (!steps || steps.length === 0) return '';
 
+            // Group by project
+            const byProject = {};
+            steps.forEach(s => {
+                const pName = s.projects?.name || 'Unknown Project';
+                if (!byProject[pName]) byProject[pName] = [];
+                byProject[pName].push(s);
+            });
+
+            let groupsHtml = '';
+            for (const [pName, pSteps] of Object.entries(byProject)) {
+                groupsHtml += `
+                    <div class="mt-4 first:mt-0 mb-2">
+                        <span class="text-xs font-bold text-gray-500 uppercase tracking-wider">${pName}</span>
+                    </div>
+                `;
+                groupsHtml += pSteps.map(s => {
+                    const contact = s.contacts || {};
+                    const waLink = channel === 'wa' && s.clean_phone ? `https://wa.me/${s.clean_phone}` : '#';
+                    const igLink = channel === 'ig' && s.clean_ig ? `https://instagram.com/${s.clean_ig}` : '#';
+                    const actionUrl = channel === 'wa' ? waLink : igLink;
+                    const btnColor = channel === 'wa' ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-pink-600 hover:bg-pink-500';
+
+                    return `
+                    <div class="bg-gray-800/50 border border-gray-700 rounded-lg p-4 flex gap-4 mt-2 mb-4">
+                        <div class="flex-1">
+                            <h4 class="font-medium text-white mb-1"><a href="${actionUrl}" target="_blank" class="hover:underline">${contact.name || 'Unknown'}</a></h4>
+                            <p class="text-xs text-gray-400 mb-2">${contact.email || ''}</p>
+                            <div class="bg-gray-950 p-3 rounded text-sm text-gray-300">
+                                <div class="font-medium text-white mb-2 pb-1 border-b border-gray-800">${s.subject}</div>
+                                <div class="whitespace-pre-wrap">${s.body}</div>
+                            </div>
+                        </div>
+                        <div class="w-48 shrink-0 flex flex-col gap-2">
+                            <a href="${actionUrl}" target="_blank" class="text-center w-full ${btnColor} text-white px-3 py-2 rounded text-sm font-medium transition-colors">
+                                Open ${channel.toUpperCase()}
+                            </a>
+                            <button onclick="markSequenceStatus('${s.id}', 'sent', '${channel}')" class="w-full bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded text-sm font-medium transition-colors">
+                                ✓ Mark as Done
+                            </button>
+                            <button onclick="markSequenceStatus('${s.id}', 'replied')" class="w-full bg-gray-900 border border-amber-900/50 hover:bg-amber-900/30 text-amber-500 px-3 py-2 rounded text-sm font-medium transition-colors">
+                                ↩ Mark Replied
+                            </button>
+                        </div>
+                    </div>`;
+                }).join('');
+            }
+
             return `
             <div class="bg-gray-900 border border-gray-800 rounded-xl mb-6">
                 <div class="px-4 py-3 border-b border-gray-800 flex items-center gap-2">
                     <i data-lucide="${icon}" class="w-4 h-4 ${iconColor}"></i>
                     <h3 class="text-sm font-semibold text-white">${title}</h3>
                 </div>
-                <div class="p-4 space-y-4">
-                    ${steps.map(s => {
-                const contact = s.contacts || {};
-                const waLink = channel === 'wa' && s.clean_phone ? `https://wa.me/${s.clean_phone}` : '#';
-                const igLink = channel === 'ig' && s.clean_ig ? `https://instagram.com/${s.clean_ig}` : '#';
-                const actionUrl = channel === 'wa' ? waLink : igLink;
-                const btnColor = channel === 'wa' ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-pink-600 hover:bg-pink-500';
-
-                return `
-                        <div class="bg-gray-800/50 border border-gray-700 rounded-lg p-4 flex gap-4">
-                            <div class="flex-1">
-                                <h4 class="font-medium text-white mb-1"><a href="${actionUrl}" target="_blank" class="hover:underline">${contact.name || 'Unknown'}</a></h4>
-                                <p class="text-xs text-gray-400 mb-2">${contact.email || ''}</p>
-                                <div class="bg-gray-950 p-3 rounded text-sm text-gray-300">
-                                    <div class="font-medium text-white mb-2 pb-1 border-b border-gray-800">${s.subject}</div>
-                                    <div class="whitespace-pre-wrap">${s.body}</div>
-                                </div>
-                            </div>
-                            <div class="w-48 shrink-0 flex flex-col gap-2">
-                                <a href="${actionUrl}" target="_blank" class="text-center w-full ${btnColor} text-white px-3 py-2 rounded text-sm font-medium transition-colors">
-                                    Open ${channel.toUpperCase()}
-                                </a>
-                                <button onclick="markSequenceStatus('${s.id}', 'sent', '${channel}')" class="w-full bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded text-sm font-medium transition-colors">
-                                    ✓ Mark as Sent
-                                </button>
-                                <button onclick="markSequenceStatus('${s.id}', 'replied')" class="w-full bg-gray-900 border border-amber-900/50 hover:bg-amber-900/30 text-amber-500 px-3 py-2 rounded text-sm font-medium transition-colors">
-                                    ↩ Mark Replied
-                                </button>
-                            </div>
-                        </div>`;
-            }).join('')}
+                <div class="p-4">
+                    ${groupsHtml}
                 </div>
             </div>`;
         }
@@ -853,10 +871,10 @@
                                                                 <td class="py-2">
                                                                     ${s.status === 'pending' ? `
                                                                         <div class="flex gap-1 flex-wrap">
-                                                                            <button onclick="event.stopPropagation(); markSequenceStatus('${s.id}', 'sent')" class="text-xs px-2 py-1 bg-emerald-900/50 text-emerald-400 rounded hover:bg-emerald-800/50 transition-colors" title="Mark as manually sent (Email)">✓ Email</button>
-                                                                            <button onclick="event.stopPropagation(); markSequenceStatus('${s.id}', 'sent', 'wa')" class="text-xs px-2 py-1 bg-green-900/50 text-green-400 rounded hover:bg-green-800/50 transition-colors" title="Mark as manually sent (WhatsApp)">📱 WA</button>
-                                                                            <button onclick="event.stopPropagation(); markSequenceStatus('${s.id}', 'sent', 'ig')" class="text-xs px-2 py-1 bg-pink-900/50 text-pink-400 rounded hover:bg-pink-800/50 transition-colors" title="Mark as manually sent (Instagram)">📷 IG</button>
-                                                                            <button onclick="event.stopPropagation(); markSequenceStatus('${s.id}', 'replied')" class="text-xs px-2 py-1 bg-amber-900/50 text-amber-400 rounded hover:bg-amber-800/50 transition-colors" title="Mark as replied — cancels all future steps">↩ Replied</button>
+                                                                            <button onclick="event.stopPropagation(); markSequenceStatus('${s.id}', 'sent')" class="text-xs px-2 py-1 bg-gray-800 text-gray-400 rounded hover:bg-emerald-900/50 hover:text-emerald-400 transition-colors" title="Mark as manually sent (Email)">✓ Email</button>
+                                                                            <button onclick="event.stopPropagation(); markSequenceStatus('${s.id}', 'sent', 'wa')" class="text-xs px-2 py-1 bg-gray-800 text-gray-400 rounded hover:bg-green-900/50 hover:text-green-400 transition-colors" title="Mark as manually sent (WhatsApp)">📱 WA</button>
+                                                                            <button onclick="event.stopPropagation(); markSequenceStatus('${s.id}', 'sent', 'ig')" class="text-xs px-2 py-1 bg-gray-800 text-gray-400 rounded hover:bg-pink-900/50 hover:text-pink-400 transition-colors" title="Mark as manually sent (Instagram)">📷 IG</button>
+                                                                            <button onclick="event.stopPropagation(); markSequenceStatus('${s.id}', 'replied')" class="text-xs px-2 py-1 bg-gray-800 text-gray-400 rounded hover:bg-amber-900/50 hover:text-amber-400 transition-colors" title="Mark as replied — cancels all future steps">↩ Replied</button>
                                                                         </div>
                                                                     ` : ''}
                                                                 </td>

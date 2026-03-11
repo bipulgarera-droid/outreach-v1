@@ -238,14 +238,17 @@ def dashboard_stats():
 @app.route('/api/dashboard/daily-snapshot')
 def daily_snapshot():
     """Get all pending sequence steps grouped by available manual/automatic channels."""
+    from datetime import timedelta
     try:
-        now = datetime.utcnow().isoformat()
+        ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
+        # We want to include everything scheduled UP TO the end of the current day in IST
+        date_str = ist_now.strftime('%Y-%m-%dT23:59:59')
         
         # Get all pending steps due for sending
         result = supabase.table('email_sequences')\
-            .select('id, subject, body, step_number, project_id, contacts(name, email, phone, instagram, linkedin_url)')\
+            .select('id, subject, body, step_number, project_id, contacts(name, email, enrichment_data), projects(name)')\
             .eq('status', 'pending')\
-            .lte('scheduled_at', now)\
+            .lte('scheduled_at', date_str)\
             .order('scheduled_at')\
             .execute()
             
@@ -263,20 +266,30 @@ def daily_snapshot():
             if not contact:
                 continue
                 
+            enrichment = contact.get('enrichment_data')
+            if enrichment and isinstance(enrichment, str):
+                import json
+                try:
+                    enrichment = json.loads(enrichment)
+                except Exception:
+                    enrichment = {}
+            enrichment = enrichment or {}
+                
             # If they have an email, they are strictly part of the automatic queue
             if contact.get('email'):
                 snapshot['automatic'].append(step)
             
             # They can also be in manual queues if they have the respective details
-            if contact.get('phone'):
+            if enrichment.get('phone'):
                 # Basic cleaning of phone for wa.me links
-                clean_phone = ''.join(filter(str.isdigit, contact['phone']))
+                clean_phone = ''.join(filter(str.isdigit, str(enrichment['phone'])))
                 if clean_phone:
                     step['clean_phone'] = clean_phone
                     snapshot['manual_wa'].append(step)
                     
-            if contact.get('instagram'):
-                clean_ig = contact['instagram'].replace('@', '').strip()
+            ig_handle = enrichment.get('instagram') or enrichment.get('instagram_handle')
+            if ig_handle:
+                clean_ig = str(ig_handle).replace('@', '').strip()
                 if clean_ig:
                     step['clean_ig'] = clean_ig
                     snapshot['manual_ig'].append(step)
@@ -583,7 +596,7 @@ def list_sequences():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/sequences/<int:sequence_id>', methods=['PUT'])
+@app.route('/api/sequences/<sequence_id>', methods=['PUT'])
 def update_sequence(sequence_id):
     """Update a specific sequence step (e.g. manual edit, mark sent/replied)."""
     try:
