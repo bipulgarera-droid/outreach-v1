@@ -76,10 +76,15 @@ The icebreaker MUST observe or compliment something specific about their CURRENT
 CRITICAL: Do NOT hallucinate or confuse their current job with past roles. Stick strictly to their present situation.
 CRITICAL: Do NOT mention your own project, film, business, or reason for reaching out. The icebreaker must be 100% about THEM and their work.
 
-Keep it warm, genuine, and NOT salesy. No generic flattery.
+If you cannot find specific deep information, you MUST STILL provide a generic but warm, professional compliment about their company's industry footprint, recent growth, or apparent mission. 
+UNDER NO CIRCUMSTANCES should you say "I don't have enough information" or "I cannot write an icebreaker". Just write the best professional 1-2 sentence compliment you can given the name/company provided.
+
+Keep it warm, genuine, and NOT salesy. No generic flattery ("you are the best"), instead acknowledge their space or effort ("I see the great work your team is doing in...").
+
 CRITICAL INSTRUCTIONS:
 1. NEVER include academic citations, footnotes, or bracketed numbers like [1] or [2] in your response.
 2. DO NOT use HTML tags like <p> or <br>. Use standard text line breaks if needed.
+3. NEVER apologize or state that you lack information. Just write the icebreaker.
 
 {context}
 
