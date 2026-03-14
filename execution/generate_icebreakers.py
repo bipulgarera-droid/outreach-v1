@@ -149,13 +149,16 @@ def generate_icebreakers_batch(limit: int = 50, project_id: str | None = None, c
     
     supabase = create_client(supabase_url, supabase_key)
     
-    # Fetch enriched contacts without icebreakers
-    query = supabase.table('contacts').select('*').eq('status', 'enriched')
+    # Fetch contacts needing icebreakers
+    query = supabase.table('contacts').select('*')
     
     if contact_ids:
-        query = query.in_('id', contact_ids)
+        # If user explicitly selected them, allow regenerating existing icebreakers
+        query = query.in_('status', ['enriched', 'icebreaker_ready']).in_('id', contact_ids)
     elif project_id:
-        query = query.eq('project_id', project_id)
+        query = query.eq('status', 'enriched').eq('project_id', project_id)
+    else:
+        query = query.eq('status', 'enriched')
         
     result = query.limit(limit).execute()
     contacts = result.data or []
