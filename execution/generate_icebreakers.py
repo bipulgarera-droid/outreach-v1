@@ -114,6 +114,10 @@ Reply with ONLY the 2-sentence icebreaker, nothing else."""
         
         import re
         
+        if not response.text:
+            logger.error(f"Gemini error for {name}: Response text is empty or blocked by safety filters.")
+            return None
+            
         icebreaker = response.text.strip()
         # Forcefully strip out any citation brackets like [1] or [3] that the search tool injects
         icebreaker = re.sub(r'\[\d+\]', '', icebreaker).strip()
@@ -124,7 +128,7 @@ Reply with ONLY the 2-sentence icebreaker, nothing else."""
             return icebreaker
         
     except Exception as e:
-        logger.error(f"Perplexity error for {name}: {e}")
+        logger.error(f"Gemini error for {name}: {e}")
     
     return None
 
