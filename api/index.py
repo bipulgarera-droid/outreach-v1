@@ -797,14 +797,21 @@ def create_sequences():
                     raw_company = enrichment_data.get('company') or enrichment_data.get('linkedin_company') or contact.get('name', 'your company')
                     
                     full_name = contact.get('name', 'there')
-                    # Don't split the name if it's meant to be a business team entity
-                    first_name = full_name if (' Team' in full_name or ' Business' in full_name or len(full_name.split()) == 1) else full_name.split()[0]
+                    # Clean the greeting name: strip trailing " - Team" / "- Business" patterns
+                    # so "Jasmine - Team" → "Jasmine" for the Hi {{first_name}} line
+                    greeting_name = _re.sub(r'\s*-\s*(Team|Business|Staff|Group|Page|Hub|Official)\s*$', '', full_name, flags=_re.IGNORECASE).strip()
+                    # If still a business-style name (has " Team"/" Business" or single word), keep it whole; else first word only
+                    first_name = greeting_name if (' Team' in greeting_name or ' Business' in greeting_name or len(greeting_name.split()) == 1) else greeting_name.split()[0]
+                    
+                    # Strip any leftover [N] citations from stored icebreaker
+                    raw_icebreaker = contact.get('icebreaker', '') or ''
+                    clean_icebreaker = _re.sub(r'\[\d+\]', '', raw_icebreaker).strip()
                     
                     variables = {
                         'name': full_name,
                         'first_name': first_name,
                         'bio': contact.get('bio', ''),
-                        'icebreaker': contact.get('icebreaker', ''),
+                        'icebreaker': clean_icebreaker,
                         'company': _shorten_company(raw_company),
                         # Sender variables (from .env SENDER_NAME)
                         'sender_name': SENDER_NAME,

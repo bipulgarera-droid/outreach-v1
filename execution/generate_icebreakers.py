@@ -40,8 +40,10 @@ def _fetch_website_context(name: str, location: str = None, website: str = None)
     Returns scraped homepage text or empty string on failure.
     """
     try:
-        # Step 1: Build search query
-        query = name if not location else f"{name} {location}"
+        # Step 1: Build search query — strip team/business suffixes for cleaner search
+        import re as _re
+        clean_name = _re.sub(r'\s*-\s*(Team|Business|Staff|Group|Page|Hub|Official)\s*$', '', name, flags=_re.IGNORECASE).strip()
+        query = clean_name if not location else f"{clean_name} {location}"
         
         # If we already have a website, skip Serper and go straight to scraping
         target_url = website
@@ -101,8 +103,11 @@ def generate_icebreaker(name: str, bio: str, linkedin_url: str = None, enrichmen
     location = enrichment_data.get('city') or enrichment_data.get('location') or enrichment_data.get('linkedin_location', '')
     website = enrichment_data.get('website') or enrichment_data.get('domain', '')
     
+    # Use company field for search if available (avoids "Jasmine - Team" style noise)
+    search_name = enrichment_data.get('company') or enrichment_data.get('linkedin_company') or name
+    
     # Step 1: Scrape the business website for real context
-    web_content = _fetch_website_context(name, location=location, website=website)
+    web_content = _fetch_website_context(search_name, location=location, website=website)
     
     context = f"Business Name: {name}"
     if location:
