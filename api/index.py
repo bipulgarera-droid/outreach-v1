@@ -1126,6 +1126,20 @@ def list_search_runs():
 # ROUTES — Import Leads from GrowthScout
 # =============================================================================
 
+import re as _import_re
+
+def _clean_import_name(name):
+    """Strip dash+noise suffixes and trailing punctuation from business names at import time."""
+    if not name: return name
+    name = name.strip()
+    # Strip 'Team', 'Business', etc. with optional dash before them
+    name = _import_re.sub(r'\s*[-\u2013\u2014]?\s*(Team|Business|Staff|Group|Page|Hub|Official)\s*$', '', name, flags=_import_re.IGNORECASE).strip()
+    # Strip common legal suffixes
+    name = _import_re.sub(r'\s*(LLC|Inc\.?|Corp\.?|Ltd\.?|LLP|Co\.?|Limited|Holdings|International|Services|Solutions|Enterprises|Associates|Consulting|Organization|Foundation)\s*$', '', name, flags=_import_re.IGNORECASE).strip()
+    # Strip trailing dashes, pipes, commas, underscores
+    name = name.strip(' -|,_').strip()
+    return name or name
+
 @app.route('/api/import-leads', methods=['POST'])
 def import_leads():
     """Import pre-enriched leads from GrowthScout into Outreach contacts.
@@ -1242,9 +1256,12 @@ def import_leads():
             if niche_val and niche_val.lower() not in ('unknown', 'growthscout', ''):
                 enrichment['niche'] = niche_val
             
+            # Clean the contact name at import time
+            clean_name = _clean_import_name(name) or name
+            
             contact = {
                 'project_id': project_id,
-                'name': lead.get('name', 'Unknown'),
+                'name': clean_name if clean_name else lead.get('name', 'Unknown'),
                 'email': email,
                 'bio': lead.get('bio', ''),
                 'linkedin_url': lead.get('linkedin') or None,
