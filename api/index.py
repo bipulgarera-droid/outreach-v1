@@ -912,7 +912,10 @@ def create_sequences():
                         'company': _shorten_company(raw_company),
                         # Sender variables (from .env SENDER_NAME)
                         'sender_name': SENDER_NAME,
-                        'sender_first_name': SENDER_NAME.split()[0] if SENDER_NAME else 'Bipul',
+                        'sender_first_name': SENDER_NAME.split()[0] if SENDER_NAME else '',
+                        # GrowthScout location + niche (for template variables and paraphrase context)
+                        'location': enrichment_data.get('location') or enrichment_data.get('search_location') or '',
+                        'niche': enrichment_data.get('niche') or enrichment_data.get('category') or contact.get('source') or '',
                         # LinkedIn enrichment fields for paraphraser context
                         'linkedin_headline': enrichment_data.get('linkedin_headline', ''),
                         'linkedin_company': enrichment_data.get('linkedin_company', ''),
@@ -1221,6 +1224,17 @@ def import_leads():
                 enrichment['audit_data'] = lead['audit_data']
             if lead.get('analysis_bullets'):
                 enrichment['analysis_bullets'] = lead['analysis_bullets']
+            # Location: top-level field OR nested in enrichment_data.search_location
+            location_val = (lead.get('location') or 
+                           enrichment.get('search_location') or 
+                           enrichment.get('location') or '').strip()
+            if location_val:
+                enrichment['location'] = location_val
+            # Niche: top-level 'niche' OR 'category'
+            niche_val = (lead.get('niche') or lead.get('category') or 
+                        enrichment.get('niche') or enrichment.get('category') or '').strip()
+            if niche_val and niche_val.lower() not in ('unknown', 'growthscout', ''):
+                enrichment['niche'] = niche_val
             
             contact = {
                 'project_id': project_id,
@@ -1229,8 +1243,8 @@ def import_leads():
                 'bio': lead.get('bio', ''),
                 'linkedin_url': lead.get('linkedin') or None,
                 'instagram': lead.get('instagram') or None,
-                'source': lead.get('category') or 'growthscout',
-                'status': 'enriched' if email else 'new',  # enriched if has email, new if manual-only
+                'source': niche_val or lead.get('category') or 'growthscout',
+                'status': 'enriched' if email else 'new',
                 'enrichment_data': json.dumps(enrichment),
             }
             
