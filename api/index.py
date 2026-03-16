@@ -123,14 +123,15 @@ def create_project():
                 - Keep emails SHORT (3-5 sentences max for the body)
                 - Professional but direct tone
                 
-                IMPORTANT — UNDERSTANDING THE VARIABLES:
-                - {{{{icebreaker}}}} is a WARM PERSONALIZED INTRO about the prospect's business. It is NOT about issues or problems. It contains researched info about what the business does, their recent work, accomplishments, etc. Use it as the opening line to show you've done your homework on THEM.
-                - After the icebreaker, the email body should transition into GENERIC issue findings relevant to the project niche (e.g. slow page speed, missing meta tags, low engagement, competitors outperforming them). These findings are STATIC TEXT in the template — do NOT put them in {{{{icebreaker}}}}.
-                - {{{{first_name}}}}, {{{{name}}}}, {{{{company}}}} are standard contact variables.
+                VARIABLES YOU MAY USE:
+                - {{{{first_name}}}} — the contact's first name or business greeting name
+                - {{{{name}}}} — the contact's full name
+                - {{{{company}}}} — the contact's company name
+                Do NOT use {{{{icebreaker}}}} — it has been removed from this system.
                 
                 TEMPLATE STRUCTURE FOR STEP 1:
-                1. Open with {{{{icebreaker}}}} as a warm, personalized greeting showing you know their business
-                2. Transition to generic but scary findings relevant to the niche (page speed, missing tags, competitor gaps, etc.)
+                1. Open with a warm but concise observation about the type of business they likely run (generic, no icebreaker needed)
+                2. Transition to specific issue findings relevant to the niche (page speed, missing tags, competitor gaps, etc.)
                 3. Close with a permission-based CTA asking if they want the full report
                 
                 You MUST return the output as a SINGLE VALID JSON ARRAY of exactly 4 objects.
@@ -139,7 +140,6 @@ def create_project():
                 - "subject_template" (the email subject line)
                 - "body_template" (the email body)
                 
-                Step 1 MUST include the exact text "{{{{icebreaker}}}}" in its body_template as the opening.
                 Steps 2-3 should be short follow-ups that re-emphasize the value of the report.
                 Step 4 should be a polite break-up email.
                 Return ONLY the raw JSON array. Do not wrap it in markdown block quotes."""
@@ -551,7 +551,8 @@ def generate_template():
             
         system = """You are an expert cold email copywriter. Write a single sequence step based on the prompt.
         Return ONLY valid JSON with 'subject' and 'body' keys.
-        You may use these variables in curly braces: {{name}}, {{first_name}}, {{icebreaker}}, {{bio}}.
+        You may use these variables: {{name}}, {{first_name}}, {{company}}.
+        Do NOT use {{icebreaker}} - it is no longer used.
         Keep the email concise and natural.
         CRITICAL INSTRUCTIONS:
         1. NEVER include academic citations, footnotes, or bracketed numbers like [1] or [2] in your response.
@@ -714,14 +715,15 @@ def paraphrase_text(text: str, context: dict = None) -> str:
                 contact_info += f"Their LinkedIn About: {about_snippet}\n"
             contact_info += "\nIf appropriate and highly relevant, weave a brief, natural reference to their background or company into the paraphrased text to make the follow-up hyper-personalized. DO NOT hallucinate facts, guess their current challenges, or assume things not explicitly stated in their bio or the icebreaker. Stick strictly to the provided facts."
 
-        system = f"""You are an expert copywriter. Paraphrase the following email body to avoid spam filters.
-        Keep the exact same meaning, tone, and roughly the same length, but change about 15-20% of the word choices.{contact_info}
+        system = f"""You are an expert cold email copywriter. Paraphrase the following email body to evade spam filters.
+        Rewrite it so it sounds genuinely fresh: restructure sentences, use synonyms, vary the sentence rhythm.
+        Aim to change ~30% of the wording while keeping the same meaning, intent, and length.{contact_info}
         
-        CRITICAL: If you see raw variables like {{{{name}}}}, {{{{first_name}}}}, {{{{icebreaker}}}}, {{{{bio}}}}, or any other bracketed texts, YOU MUST LEAVE THEM EXACTLY AS THEY ARE.
-        CRITICAL INSTRUCTIONS:
-        1. NEVER include academic citations, footnotes, or bracketed numbers like [1] or [2] in your response.
-        2. DO NOT use HTML tags like <p> or <br>. Use standard text line breaks if needed.
-        Return ONLY the rewritten text, nothing else."""
+        CRITICAL: Preserve ALL template variables exactly as written: {{{{name}}}}, {{{{first_name}}}}, {{{{company}}}}, {{{{sender_name}}}}, etc. Do NOT modify or remove them.
+        CRITICAL: Do NOT add any new facts, claims, or information not present in the original.
+        CRITICAL: No citations, no footnotes, no bracketed numbers like [1] or [2].
+        DO NOT use HTML tags. Use plain line breaks.
+        Return ONLY the rewritten email body text, nothing else."""
         
         client = genai.Client(api_key=GEMINI_API_KEY)
         response = client.models.generate_content(
@@ -828,9 +830,8 @@ def create_sequences():
                             subject = template['subject_template']
                             body = template['body_template']
                             
-                            # AI Paraphrase for follow-up steps (Step 2+) to avoid spam filters
-                            if template['step_number'] > 1:
-                                body = paraphrase_text(body, context=variables)
+                            # Paraphrase EVERY step per contact for spam avoidance
+                            body = paraphrase_text(body, context=variables)
                             
                             for key, val in variables.items():
                                 val_str = str(val) if val is not None else ''

@@ -1093,7 +1093,7 @@
                 <div class="mb-4 flex items-center justify-between">
                     <div>
                         <h3 class="text-lg font-semibold text-white">Sequence Builder</h3>
-                        <p class="text-xs text-gray-400">Available variables: <code class="text-violet-400 bg-gray-800 px-1 rounded">{{name}}</code> <code class="text-violet-400 bg-gray-800 px-1 rounded">{{first_name}}</code> <code class="text-violet-400 bg-gray-800 px-1 rounded">{{company}}</code> <code class="text-violet-400 bg-gray-800 px-1 rounded">{{icebreaker}}</code> <code class="text-violet-400 bg-gray-800 px-1 rounded">{{bio}}</code></p>
+                        <p class="text-xs text-gray-400">Available variables: <code class="text-violet-400 bg-gray-800 px-1 rounded">{{name}}</code> <code class="text-violet-400 bg-gray-800 px-1 rounded">{{first_name}}</code> <code class="text-violet-400 bg-gray-800 px-1 rounded">{{company}}</code> <code class="text-violet-400 bg-gray-800 px-1 rounded">{{sender_name}}</code> <code class="text-violet-400 bg-gray-800 px-1 rounded">{{sender_first_name}}</code></p>
                     </div>
                 </div>
                 <div class="space-y-4" id="templates-container">
@@ -1109,7 +1109,7 @@
                                     <label class="text-gray-400 flex items-center gap-2">
                                         Delay (Days): <input type="number" id="t-delay-${t.id}" value="${t.delay_days}" class="w-16 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-center focus:outline-none focus:border-violet-500">
                                     </label>
-                                    <button onclick="generateTemplateAI(${t.id}, ${t.step_number})" class="text-indigo-400 hover:text-indigo-300 flex items-center gap-1"><i data-lucide="sparkles" class="w-4 h-4"></i> AI</button>
+                                    <button onclick="regenerateTemplateAI(${t.id}, ${t.step_number})" class="text-indigo-400 hover:text-indigo-300 flex items-center gap-1" title="Rewrite this step with AI"><i data-lucide="refresh-cw" class="w-4 h-4"></i> Regenerate</button>
                                     <button onclick="saveTemplate(${t.id})" class="text-emerald-400 hover:text-emerald-300 flex items-center gap-1"><i data-lucide="save" class="w-4 h-4"></i> Save</button>
                                     <button onclick="deleteTemplate(${t.id})" class="text-red-400 hover:text-red-300 flex items-center gap-1"><i data-lucide="trash" class="w-4 h-4"></i> Del</button>
                                 </div>
@@ -1155,10 +1155,47 @@
             }
         }
 
-        async function generateTemplateAI(id, stepNumber) {
-            const userPrompt = window.prompt('What should this email step be about? (e.g. "A polite follow-up asking if they watched the trailer")\\n\\nNote: Generating uses the Gemini API.');
-            if (!userPrompt) return;
+        async function regenerateTemplateAI(id, stepNumber) {
+            // Use the current body as context so the rewrite respects edits the user has made
+            const currentBody = document.getElementById(`t-body-${id}`).value.trim();
+            const currentSubject = document.getElementById(`t-subject-${id}`).value.trim();
 
+            const mode = await new Promise(resolve => {
+                const choice = window.confirm(
+                    'Click OK to rewrite from your current template (recommended).\nClick Cancel to write a fresh email from scratch instead.'
+                );
+                resolve(choice ? 'rewrite' : 'scratch');
+            });
+
+            let promptText;
+            if (mode === 'rewrite') {
+                promptText = `Rewrite the following Step ${stepNumber} cold email so it has a fresh feel while keeping the same intent, CTA, and length.\n\nCurrent subject: ${currentSubject}\n\nCurrent body:\n${currentBody}`;
+            } else {
+                const custom = window.prompt(`Describe what Step ${stepNumber} should do (e.g. "A polite follow-up asking if they saw the audit")`);
+                if (!custom) return;
+                promptText = custom + ` This is step ${stepNumber} in the sequence.`;
+            }
+
+            showToast('🔁 Regenerating template...');
+            try {
+                const res = await apiFetch('/api/templates/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt: promptText })
+                });
+                const data = await res.json();
+                if (data.error) throw new Error(data.error);
+                document.getElementById(`t-subject-${id}`).value = data.subject_template;
+                document.getElementById(`t-body-${id}`).value = data.body_template;
+                showToast('✅ Regenerated! Review and Save.');
+            } catch (e) {
+                showToast('❌ Regeneration error: ' + e.message);
+            }
+        }
+
+        async function generateTemplateAI(id, stepNumber) {
+            const userPrompt = window.prompt('What should this email step be about?');
+            if (!userPrompt) return;
             showToast('🪄 AI is writing the template...');
             try {
                 const res = await apiFetch('/api/templates/generate', {
@@ -1168,7 +1205,6 @@
                 });
                 const data = await res.json();
                 if (data.error) throw new Error(data.error);
-
                 document.getElementById(`t-subject-${id}`).value = data.subject_template;
                 document.getElementById(`t-body-${id}`).value = data.body_template;
                 showToast('✅ AI generation complete. Remember to Save!');
