@@ -1268,7 +1268,7 @@ def import_leads():
                 'instagram': lead.get('instagram') or None,
                 'source': niche_val or lead.get('category') or 'growthscout',
                 'status': 'enriched' if email else 'new',
-                'enrichment_data': json.dumps(enrichment),
+                'enrichment_data': enrichment,
             }
             
             contacts_to_insert.append(contact)
