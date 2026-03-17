@@ -971,7 +971,7 @@ def create_sequences():
                 return created, errors
 
             # ── PARALLEL: process up to 10 contacts concurrently ──
-            with ThreadPoolExecutor(max_workers=10) as pool:
+            with ThreadPoolExecutor(max_workers=5) as pool:
                 futures = {pool.submit(process_contact, c): c for c in contacts_data}
                 for fut in as_completed(futures):
                     try:
