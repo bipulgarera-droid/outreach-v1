@@ -36,7 +36,7 @@ DELAY_MIN = int(os.getenv('DELAY_MIN_SECONDS', 45))
 DELAY_MAX = int(os.getenv('DELAY_MAX_SECONDS', 90))
 
 
-def send_pending_emails(limit: int = 50, dry_run: bool = False, project_id: str = None, contact_ids: list[str] = None) -> dict:
+def send_pending_emails(limit: int = 300, dry_run: bool = False, project_id: str = None, contact_ids: list[str] = None) -> dict:
     """Send all pending emails where scheduled_at <= now(). Filters by project_id and/or contact_ids if provided."""
     
     # Init Supabase
@@ -102,7 +102,9 @@ def send_pending_emails(limit: int = 50, dry_run: bool = False, project_id: str 
                 logger.error("All SMTP accounts exhausted their hourly/daily limits. Stopping.")
                 break
                 
-            logger.info(f"{'[DRY RUN] ' if dry_run else ''}Sending step {seq['step_number']} to {to_email} from {account.email}")
+            usage = pool.get_total_usage()
+            limit_total = pool.get_total_limit()
+            logger.info(f"{'[DRY RUN] ' if dry_run else ''}[{usage}/{limit_total}] Sending step {seq['step_number']} to {to_email} from {account.email}")
             
             # Send Email
             res = pool.send_email(

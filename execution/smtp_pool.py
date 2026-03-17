@@ -52,6 +52,8 @@ def _load_accounts_from_env() -> list[dict]:
 
 class GmailAccount:
     """Represents a single Gmail account with send tracking."""
+    max_per_day = MAX_PER_DAY
+    
     def __init__(self, email: str, app_password: str):
         self.email = email
         self.app_password = app_password
@@ -120,6 +122,19 @@ class SMTPPool:
         self.accounts = [GmailAccount(a["email"], a["app_password"]) for a in accounts_data]
         self._index = 0
         logger.info(f"[SMTP Pool] Loaded {len(self.accounts)} accounts.")
+
+    def get_total_usage(self) -> int:
+        """Sum of all sends today across all accounts in the pool."""
+        total = 0
+        for account in self.accounts:
+            # can_send property triggers the cache update
+            _ = account.can_send 
+            total += account._sends_today_cache
+        return total
+
+    def get_total_limit(self) -> int:
+        """Total daily limit across all accounts."""
+        return sum(a.max_per_day for a in self.accounts)
 
     def get_next_account(self) -> Optional[GmailAccount]:
         """Get the next available account via round-robin."""

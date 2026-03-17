@@ -1115,7 +1115,7 @@ def trigger_daily_run():
     """Trigger the full daily workflow: check replies + send pending emails."""
     try:
         data = request.json or {}
-        limit = data.get('limit', 250)
+        limit = data.get('limit', 300)
         dry_run = data.get('dry_run', False)
         project_id = data.get('project_id')
 
@@ -1143,12 +1143,12 @@ def get_smtp_capacity():
         
         # We need to know how many accounts we loaded to calculate max
         try:
+            from execution.smtp_pool import SMTPPool, MAX_PER_DAY
             pool = SMTPPool()
             account_count = len(pool.accounts)
             
-            # Use the global MAX_PER_DAY imported from smtp_pool
-            from execution.smtp_pool import MAX_PER_DAY
-            max_capacity = account_count * MAX_PER_DAY
+            # 5 accounts * 60 = 300
+            max_capacity = account_count * MAX_PER_DAY if account_count > 0 else 0
         except Exception as e:
             # If pool fails to load (e.g. no env vars)
             logger.warning(f"Error loading SMTPPool for capacity check: {e}")
