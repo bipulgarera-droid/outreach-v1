@@ -727,7 +727,7 @@ def list_sequences():
         if status:
             query = query.eq('status', status)
         
-        result = query.order('created_at', desc=True).limit(100).execute()
+        result = query.order('created_at', desc=True).limit(10000).execute()
         return jsonify({'sequences': result.data or []})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
