@@ -14,11 +14,14 @@ Usage:
 
 import os
 import sys
+import re
 import imaplib
 import email
 import logging
 import argparse
 import json
+import socket
+import ssl
 from datetime import datetime, timedelta
 from email.header import decode_header
 
@@ -70,18 +73,28 @@ def _extract_sender_email(from_header: str) -> str:
     return from_header.strip().lower()
 
 
-def check_replies_for_account(acct_email: str, acct_password: str, prospect_emails: set, days: int = 7) -> list[str]:
-    """
-    Connect via IMAP to a single Gmail account and look for replies
-    from any of the known prospect emails.
+def _get_imap_connection(acct_email: str, acct_password: str) -> imaplib.IMAP4_SSL:
+    """Helper to establish a fresh IMAP connection with timeout."""
+    # Timeout=30 is key for avoiding long hangs
+    mail = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=30)
+    mail.login(acct_email, acct_password)
+    mail.select("INBOX")
+    return mail
 
-    Returns a list of prospect email addresses that have replied.
+
+def check_replies_for_account(acct_email: str, acct_password: str, prospect_emails: set, days: int = 7) -> tuple[list[str], list[str]]:
+    """
+    Connect via IMAP to a single Gmail account and look for:
+    1. Direct replies from known prospect emails.
+    2. Bounce notifications (mailer-daemon) referring to these prospects.
+
+    Returns (replied_emails, bounced_emails).
     """
     replied = []
+    bounced = []
+    mail = None
     try:
-        mail = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
-        mail.login(acct_email, acct_password)
-        mail.select("INBOX")
+        mail = _get_imap_connection(acct_email, acct_password)
 
         # Search for recent emails
         since_date = (datetime.now() - timedelta(days=days)).strftime("%d-%b-%Y")
@@ -90,118 +103,167 @@ def check_replies_for_account(acct_email: str, acct_password: str, prospect_emai
         if status != "OK" or not message_ids[0]:
             logger.info(f"[{acct_email}] No recent emails found.")
             mail.logout()
-            return replied
+            return [], []
 
         ids = message_ids[0].split()
-        logger.info(f"[{acct_email}] Scanning {len(ids)} emails from the last {days} days...")
+        logger.info(f"[{acct_email}] Scanning {len(ids)} emails from last {days} days...")
 
         for msg_id in ids:
             try:
-                status, msg_data = mail.fetch(msg_id, "(RFC822)")
-                if status != "OK":
-                    continue
+                # Attempt to fetch. If connection is lost, retry ONCE after reconnecting.
+                max_retries = 1
+                msg_data = None
+                for attempt in range(max_retries + 1):
+                    try:
+                        status, msg_data = mail.fetch(msg_id, "(RFC822)")
+                        if status == "OK":
+                            break
+                    except (socket.error, imaplib.IMAP4.error, imaplib.IMAP4.abort, ssl.SSLError):
+                        if attempt < max_retries:
+                            logger.warning(f"  Connection lost on {acct_email} during fetch. Reconnecting...")
+                            try: mail.logout()
+                            except: pass
+                            mail = _get_imap_connection(acct_email, acct_password)
+                            continue
+                        else: raise
+
+                if not msg_data or status != "OK": continue
 
                 raw = msg_data[0][1]
                 msg = email.message_from_bytes(raw)
                 from_header = _decode_header_value(msg.get("From", ""))
+                subject_header = _decode_header_value(msg.get("Subject", ""))
                 sender = _extract_sender_email(from_header)
 
+                # A. Direct Reply
                 if sender in prospect_emails:
-                    logger.info(f"  ✅ Reply detected from prospect: {sender}")
+                    logger.info(f"  ✅ Reply: {sender}")
                     replied.append(sender)
+                    continue
+
+                # B. Bounce Detection
+                is_bounce = False
+                if any(x in sender for x in ["mailer-daemon", "postmaster"]):
+                    is_bounce = True
+                elif any(kw in subject_header.lower() for kw in ["undeliverable", "delivery status notification", "failure", "returned mail"]):
+                    is_bounce = True
+
+                if is_bounce:
+                    # Get body as string
+                    body = ""
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            if part.get_content_type() == "text/plain":
+                                try:
+                                    body += str(part.get_payload(decode=True).decode('utf-8', errors='ignore'))
+                                except: pass
+                    else:
+                        try:
+                            body = str(msg.get_payload(decode=True).decode('utf-8', errors='ignore'))
+                        except: pass
+                    
+                    # Regex for Final-Recipient or any known prospect email in the body
+                    # 1. Look for structured Final-Recipient field
+                    fr_match = re.search(r"Final-Recipient:.*?;\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})", body, re.IGNORECASE)
+                    if fr_match:
+                        email_found = fr_match.group(1).lower()
+                        if email_found in prospect_emails:
+                            logger.info(f"  ❌ Bounce (Direct): {email_found}")
+                            bounced.append(email_found)
+                    else:
+                        # 2. Heuristic: scan whole body for any monitored email
+                        # This works for "User not found: <email>" type plain text bounces
+                        for monitoring in prospect_emails:
+                            if monitoring in body.lower():
+                                logger.info(f"  ❌ Bounce (Heuristic): {monitoring}")
+                                bounced.append(monitoring)
+                                break
             except Exception as e:
-                logger.warning(f"  Error parsing email {msg_id}: {e}")
+                logger.warning(f"  Error on msg {msg_id}: {e}")
                 continue
 
-        mail.logout()
-
-    except imaplib.IMAP4.error as e:
-        logger.error(f"[{acct_email}] IMAP auth failed: {e}")
+        if mail: mail.logout()
     except Exception as e:
         logger.error(f"[{acct_email}] IMAP error: {e}")
+        try:
+            if mail: mail.logout()
+        except: pass
 
-    return replied
+    return list(set(replied)), list(set(bounced))
 
 
 def check_all_replies(days: int = 7) -> dict:
-    """
-    Main entry point. Checks all Gmail accounts for replies from
-    known prospects and updates Supabase accordingly.
-    """
+    """Checks all accounts and updates Supabase for replies/bounces."""
     from supabase import create_client
-
     supabase_url = os.getenv('SUPABASE_URL')
     supabase_key = os.getenv('SUPABASE_SERVICE_ROLE_KEY') or os.getenv('SUPABASE_KEY')
 
     if not supabase_url or not supabase_key:
         logger.error("Supabase not configured")
-        return {'error': 'No Supabase credentials'}
+        return {'error': 'No credentials'}
 
     supabase = create_client(supabase_url, supabase_key)
 
-    # Get all prospect emails that are currently in active sequences
-    contacts_result = supabase.table('contacts').select('id, email, status').eq('status', 'in_sequence').execute()
-    contacts = contacts_result.data or []
-
+    # Fetch prospects in active sequence
+    res = supabase.table('contacts').select('id, email').eq('status', 'in_sequence').execute()
+    contacts = res.data or []
     if not contacts:
-        logger.info("No contacts currently in active sequences. Nothing to check.")
-        return {'checked': 0, 'replies_found': 0}
+        logger.info("No active prospects.")
+        return {'checked': 0, 'replies_found': 0, 'bounces_found': 0}
 
-    # Build a lookup: prospect_email -> contact_id
-    email_to_id = {}
-    for c in contacts:
-        if c.get('email'):
-            email_to_id[c['email'].strip().lower()] = c['id']
-
+    email_to_id = {c['email'].strip().lower(): c['id'] for c in contacts if c.get('email')}
     prospect_emails = set(email_to_id.keys())
-    logger.info(f"Checking replies from {len(prospect_emails)} active prospects...")
-
-    # Load Gmail accounts
+    
     accounts = _load_accounts_from_env()
-    if not accounts:
-        logger.error("No Gmail accounts found in .env")
-        return {'error': 'No Gmail accounts configured'}
-
     all_replied = set()
+    all_bounced = set()
 
     for acct in accounts:
-        replied = check_replies_for_account(
-            acct_email=acct['email'],
-            acct_password=acct['app_password'],
-            prospect_emails=prospect_emails,
-            days=days
-        )
+        replied, bounced = check_replies_for_account(acct['email'], acct['app_password'], prospect_emails, days)
         all_replied.update(replied)
+        all_bounced.update(bounced)
 
-    # Update Supabase for each replied prospect
-    updated = 0
-    for replied_email in all_replied:
-        contact_id = email_to_id.get(replied_email)
-        if contact_id:
-            # Mark contact as replied
-            supabase.table('contacts').update({
-                'status': 'replied',
-                'updated_at': datetime.utcnow().isoformat()
-            }).eq('id', contact_id).execute()
+    # Process updates
+    for email in all_replied:
+        cid = email_to_id.get(email)
+        if cid:
+            supabase.table('contacts').update({'status': 'replied', 'updated_at': datetime.utcnow().isoformat()}).eq('id', cid).execute()
+            supabase.table('email_sequences').update({'status': 'cancelled'}).eq('contact_id', cid).eq('status', 'pending').execute()
+            logger.info(f"Marked {email} as REPLIED")
 
-            # Cancel all remaining pending sequences for this contact
-            supabase.table('email_sequences').update({
-                'status': 'cancelled'
-            }).eq('contact_id', contact_id).eq('status', 'pending').execute()
+    for email in all_bounced:
+        cid = email_to_id.get(email)
+        if cid:
+            # 1. Mark contact as bounced
+            supabase.table('contacts').update({'status': 'bounced', 'updated_at': datetime.utcnow().isoformat()}).eq('id', cid).execute()
+            
+            # 2. Mark the MOST RECENT SENT step as 'bounced' (for dashboard stats)
+            recent_sent = supabase.table('email_sequences') \
+                .select('id') \
+                .eq('contact_id', cid) \
+                .eq('status', 'sent') \
+                .order('sent_at', desc=True) \
+                .limit(1) \
+                .execute()
+            
+            if recent_sent.data:
+                seq_id = recent_sent.data[0]['id']
+                supabase.table('email_sequences') \
+                    .update({'status': 'bounced'}) \
+                    .eq('id', seq_id) \
+                    .execute()
 
-            logger.info(f"Marked contact {replied_email} as replied and cancelled pending sequences.")
-            updated += 1
+            # 3. Cancel all remaining pending sequences for this contact
+            supabase.table('email_sequences').update({'status': 'cancelled'}).eq('contact_id', cid).eq('status', 'pending').execute()
+            logger.info(f"Marked {email} as BOUNCED and cancelled pending steps")
 
-    stats = {
-        'accounts_checked': len(accounts),
-        'prospects_monitored': len(prospect_emails),
-        'replies_found': len(all_replied),
-        'contacts_updated': updated,
-        'replied_emails': list(all_replied)
+    return {
+        'monitored': len(prospect_emails),
+        'replies': len(all_replied),
+        'bounces': len(all_bounced),
+        'replied_emails': list(all_replied),
+        'bounced_emails': list(all_bounced)
     }
-
-    logger.info(f"Reply check complete: {json.dumps(stats, indent=2)}")
-    return stats
 
 
 if __name__ == '__main__':

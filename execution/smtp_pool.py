@@ -13,6 +13,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 import json
+import threading
 from typing import Optional
 import logging
 from supabase import create_client, Client
@@ -32,7 +33,8 @@ logger = logging.getLogger(__name__)
 
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
-MAX_PER_DAY = int(os.getenv("MAX_PER_ACCOUNT_PER_DAY", 60)) # Default to 60 as per requirements
+MAX_PER_DAY = int(os.getenv("MAX_PER_ACCOUNT_PER_DAY", 60))
+MAX_PER_HOUR = int(os.getenv("MAX_PER_ACCOUNT_PER_HOUR", 20))
 
 def get_today_str() -> str:
     return datetime.now().strftime('%Y-%m-%d')
@@ -59,35 +61,69 @@ class GmailAccount:
         self.app_password = app_password
         self.disabled = False
         self._sends_today_cache = 0
+        self._sends_hour_cache = 0
         self._last_cache_update = None
         
-    def _fetch_sends_today(self) -> int:
+    def _fetch_sends_rolling_24h(self) -> int:
+        """Count sends in the last rolling 24-hour window using smtp_send_logs."""
         if not supabase: return 0
-        
-        today = get_today_str()
+        since = (datetime.utcnow() - timedelta(hours=24)).isoformat()
         try:
-            res = supabase.table('smtp_daily_stats').select('sent_count').eq('email_address', self.email).eq('date', today).execute()
-            if res.data:
-                return res.data[0].get('sent_count', 0)
-            return 0
+            res = supabase.table('smtp_send_logs') \
+                .select('id', count='exact') \
+                .eq('email_address', self.email) \
+                .gte('created_at', since) \
+                .execute()
+            return res.count or 0
         except Exception as e:
-            logger.error(f"Error fetching stats for {self.email}: {e}")
+            logger.error(f"Error fetching rolling stats for {self.email}: {e}")
+            return 0
+
+    def _fetch_sends_rolling_1h(self) -> int:
+        """Count sends in the last rolling 1-hour window."""
+        if not supabase: return 0
+        since = (datetime.utcnow() - timedelta(hours=1)).isoformat()
+        try:
+            res = supabase.table('smtp_send_logs') \
+                .select('id', count='exact') \
+                .eq('email_address', self.email) \
+                .gte('created_at', since) \
+                .execute()
+            return res.count or 0
+        except Exception as e:
+            logger.error(f"Error fetching hourly stats for {self.email}: {e}")
             return 0
 
     @property
     def sends_today(self) -> int:
-        # Cache the result briefly to avoid rapid-fire DB hits while looping
+        """Current usage in the rolling 24h window."""
         now = datetime.now()
-        if self._last_cache_update is None or (now - self._last_cache_update).total_seconds() > 60:
-            self._sends_today_cache = self._fetch_sends_today()
-            self._last_cache_update = now
+        last_update = self._last_cache_update
+        if last_update is None or (now - last_update).total_seconds() > 60:
+            self._update_stats_cache()
         return self._sends_today_cache
 
     @property
+    def sends_hour(self) -> int:
+        """Current usage in the rolling 1h window."""
+        now = datetime.now()
+        last_update = self._last_cache_update
+        if last_update is None or (now - last_update).total_seconds() > 60:
+            self._update_stats_cache()
+        return self._sends_hour_cache
+
+    def _update_stats_cache(self):
+        """Fetch both hourly and daily stats from Supabase."""
+        self._sends_today_cache = self._fetch_sends_rolling_24h()
+        self._sends_hour_cache = self._fetch_sends_rolling_1h()
+        self._last_cache_update = datetime.now()
+
+    @property
     def can_send(self) -> bool:
-        return (not self.disabled and self.sends_today < MAX_PER_DAY)
+        return (not self.disabled and self.sends_today < MAX_PER_DAY and self.sends_hour < MAX_PER_HOUR)
 
     def record_send(self):
+        """Record a new send in both the high-precision log and the daily aggregate."""
         self._sends_today_cache += 1
         self._last_cache_update = datetime.now()
         
@@ -95,14 +131,20 @@ class GmailAccount:
         today = get_today_str()
         
         try:
-            # Check if record exists
+            # 1. Insert high-precision rolling window log
+            supabase.table('smtp_send_logs').insert({
+                'email_address': self.email
+            }).execute()
+
+            # 2. Update daily aggregate for dashboard/history
             res = supabase.table('smtp_daily_stats').select('id, sent_count').eq('email_address', self.email).eq('date', today).execute()
             if res.data:
-                # Update
                 new_count = res.data[0]['sent_count'] + 1
-                supabase.table('smtp_daily_stats').update({'sent_count': new_count, 'updated_at': datetime.now().isoformat()}).eq('id', res.data[0]['id']).execute()
+                supabase.table('smtp_daily_stats').update({
+                    'sent_count': new_count, 
+                    'updated_at': datetime.now().isoformat()
+                }).eq('id', res.data[0]['id']).execute()
             else:
-                # Insert
                 supabase.table('smtp_daily_stats').insert({
                     'email_address': self.email,
                     'date': today,
@@ -114,6 +156,11 @@ class GmailAccount:
 
 class SMTPPool:
     """Round-robin SMTP pool across multiple Gmail accounts."""
+
+    # Global send gate — shared across ALL threads/projects
+    _send_lock = threading.Lock()
+    _last_send_time: Optional[float] = None
+
     def __init__(self):
         accounts_data = _load_accounts_from_env()
         if not accounts_data:
@@ -147,48 +194,75 @@ class SMTPPool:
             checked += 1
         return None  # all accounts exhausted
 
-    def send_email(self, account: GmailAccount, to_addr: str, subject: str, body_html: str, dry_run: bool = False) -> dict:
-        """Send an HTML email via SMTP from the given account."""
-        if dry_run:
-            logger.info(f"[DRY RUN] Would send to {to_addr} from {account.email}")
-            account.record_send()
-            return {"success": True, "error": None}
+    def send_email(self, account: GmailAccount, to_addr: str, subject: str, body_html: str, dry_run: bool = False, delay_min: Optional[int] = None, delay_max: Optional[int] = None) -> dict:
+        """Send an HTML email via SMTP from the given account.
+        
+        Enforces a global inter-send delay shared across all concurrent threads,
+        so multiple project sends don't race past each other's delays.
+        """
+        import random
+        d_min = delay_min if delay_min is not None else int(os.getenv('DELAY_MIN_SECONDS', 45))
+        d_max = delay_max if delay_max is not None else int(os.getenv('DELAY_MAX_SECONDS', 90))
 
-        try:
-            msg = MIMEMultipart("alternative")
-            msg["From"] = account.email
-            msg["To"] = to_addr
-            msg["Subject"] = subject
-            
-            # Plain text version: strip any HTML tags, keep newlines
-            body_plain = body_html.replace('<br>', '\n').replace('<br/>', '\n').replace('<p>', '').replace('</p>', '\n')
-            
-            # HTML version: convert plain newlines to <br> so they render
-            body_formatted = body_html.replace('\n', '<br>\n')
-            
-            msg.attach(MIMEText(body_plain, "plain"))
-            msg.attach(MIMEText(body_formatted, "html"))
+        with SMTPPool._send_lock:
+            # Enforce global inter-send delay
+            now = time.monotonic()
+            last_send = SMTPPool._last_send_time
+            if last_send is not None:
+                elapsed = now - last_send
+                wait = random.uniform(d_min, d_max)
+                if elapsed < wait:
+                    sleep_for = wait - elapsed
+                    logger.info(f"[Global rate] Waiting {sleep_for:.1f}s before next send (global cadence)")
+                    time.sleep(sleep_for)
 
-            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
-                server.ehlo()
-                server.starttls()
-                server.ehlo()
-                server.login(account.email, account.app_password)
-                server.sendmail(account.email, to_addr, msg.as_string())
 
-            logger.info(f"Email sent to {to_addr} from {account.email}")
-            account.record_send()
-            return {"success": True, "error": None}
+            if dry_run:
+                logger.info(f"[DRY RUN] Would send to {to_addr} from {account.email}")
+                account.record_send()
+                # Update global last send time AFTER processing completes
+                SMTPPool._last_send_time = time.monotonic()
+                return {"success": True, "error": None}
 
-        except smtplib.SMTPAuthenticationError as e:
-            account.disabled = True
-            error_msg = f"Auth failed for {account.email} - account disabled: {e}"
-            logger.error(error_msg)
-            return {"success": False, "error": error_msg}
-        except Exception as e:
-            error_msg = f"SMTP error for {account.email}: {e}"
-            logger.error(error_msg)
-            return {"success": False, "error": error_msg}
+            try:
+                msg = MIMEMultipart("alternative")
+                msg["From"] = account.email
+                msg["To"] = to_addr
+                msg["Subject"] = subject
+
+                # Plain text version: strip any HTML tags, keep newlines
+                body_plain = body_html.replace('<br>', '\n').replace('<br/>', '\n').replace('<p>', '').replace('</p>', '\n')
+
+                # HTML version: convert plain newlines to <br> so they render
+                body_formatted = body_html.replace('\n', '<br>\n')
+
+                msg.attach(MIMEText(body_plain, "plain"))
+                msg.attach(MIMEText(body_formatted, "html"))
+
+                with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
+                    server.ehlo()
+                    server.starttls()
+                    server.ehlo()
+                    server.login(account.email, account.app_password)
+                    server.sendmail(account.email, to_addr, msg.as_string())
+
+                logger.info(f"Email sent to {to_addr} from {account.email}")
+                account.record_send()
+                # IMPORTANT: Only update last_send_time AFTER successful transmission.
+                # This ensures the inter-send delay (cadence) is measured from 
+                # completion to next start, preventing burst behavior.
+                SMTPPool._last_send_time = time.monotonic()
+                return {"success": True, "error": None}
+
+            except smtplib.SMTPAuthenticationError as e:
+                account.disabled = True
+                error_msg = f"Auth failed for {account.email} - account disabled: {e}"
+                logger.error(error_msg)
+                return {"success": False, "error": error_msg}
+            except Exception as e:
+                error_msg = f"SMTP error for {account.email}: {e}"
+                logger.error(error_msg)
+                return {"success": False, "error": error_msg}
 
     def get_status(self) -> dict:
         """Get dict of pool status."""
@@ -198,6 +272,8 @@ class SMTPPool:
             stats[acc.email] = {
                 'status': status,
                 'sends_today': acc.sends_today,
-                'max_per_day': MAX_PER_DAY
+                'sends_hour': acc.sends_hour,
+                'max_per_day': MAX_PER_DAY,
+                'max_per_hour': MAX_PER_HOUR
             }
         return stats

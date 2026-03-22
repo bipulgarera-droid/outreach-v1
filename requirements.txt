@@ -10,3 +10,6 @@ google-api-python-client==2.111.0
 gunicorn==21.2.0
 google-genai==0.3.0
 apify-client>=1.6.0
+dnspython
+camoufox[geoip]
+playwright

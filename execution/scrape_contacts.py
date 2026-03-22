@@ -289,13 +289,14 @@ def store_contacts(contacts: list[dict], project_id: str = None) -> dict:
         logger.info("Fetching existing contacts for deduplication...")
         existing_names = set()
         existing_urls = set()
+        existing_emails = set()
         
         # Paginate to get all existing records (Supabase limits to 1000 per request normally)
         has_more = True
         offset = 0
         limit = 1000
         
-        query = supabase.table('contacts').select('name, linkedin_url')
+        query = supabase.table('contacts').select('name, linkedin_url, email')
         if project_id:
             query = query.eq('project_id', project_id)
             
@@ -307,6 +308,8 @@ def store_contacts(contacts: list[dict], project_id: str = None) -> dict:
                         existing_names.add(row['name'].lower())
                     if row.get('linkedin_url'):
                         existing_urls.add(row['linkedin_url'].lower())
+                    if row.get('email'):
+                        existing_emails.add(row['email'].lower())
                 offset += limit
                 has_more = len(res.data) == limit
             else:
@@ -317,8 +320,11 @@ def store_contacts(contacts: list[dict], project_id: str = None) -> dict:
         for contact in contacts:
             name_lower = (contact.get('name') or '').lower()
             url_lower = (contact.get('linkedin_url') or '').lower()
+            email_lower = (contact.get('email') or '').lower()
             
-            if (url_lower and url_lower in existing_urls) or (name_lower and name_lower in existing_names):
+            if (url_lower and url_lower in existing_urls) or \
+               (name_lower and name_lower in existing_names) or \
+               (email_lower and email_lower in existing_emails):
                 stats['skipped'] += 1
             else:
                 if project_id:
@@ -327,6 +333,7 @@ def store_contacts(contacts: list[dict], project_id: str = None) -> dict:
                 # Add to local sets immediately so we don't insert duplicates within the same batch
                 if name_lower: existing_names.add(name_lower)
                 if url_lower: existing_urls.add(url_lower)
+                if email_lower: existing_emails.add(email_lower)
 
         # 3. Bulk Insert
         if new_contacts:

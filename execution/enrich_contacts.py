@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Enrich Contacts — Find emails and Instagram handles via Apify LinkedIn + Serper Google Search.
+Enrich Contacts — Find emails and Instagram handles via Serper Google Search.
 
 Reads contacts from Supabase,
-enriches with LinkedIn profile data (via Apify), email, and Instagram.
+enriches with email and Instagram based on Name + Role.
 
 Usage:
     python -m execution.enrich_contacts --limit 50
@@ -25,10 +25,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from dotenv import load_dotenv
 from pathlib import Path
 
-try:
-    from apify_client import ApifyClient
-except ImportError:
-    ApifyClient = None
+from execution.verify_email import check_email
 
 env_path = Path(__file__).resolve().parent.parent / '.env'
 load_dotenv(env_path)
@@ -38,8 +35,6 @@ logger = logging.getLogger(__name__)
 
 SERPER_API_KEY = os.getenv('SERPER_API_KEY')
 SERPER_URL = 'https://google.serper.dev/search'
-APIFY_API_KEY = os.getenv('APIFY_API_KEY')
-APIFY_ACTOR = 'apimaestro/linkedin-profile-full-sections-scraper'
 
 # Common role keywords to help Google narrow results
 ROLE_KEYWORDS_MAP = {
@@ -50,293 +45,258 @@ ROLE_KEYWORDS_MAP = {
     'critic': 'film critic',
     'writer': 'writer',
     'journalist': 'journalist',
+    'editor': 'editor',
     'ceo': 'ceo',
     'founder': 'founder',
     'marketing': 'marketing',
     'manager': 'manager',
 }
 
+# No Jina/Gemini needed for branding as per user request
 
-def guess_role_keyword(contact: dict) -> str:
-    """
-    Try to extract a role keyword from the contact's bio or source query.
-    This helps narrow down Serper searches (e.g. 'John Doe festival programmer email').
-    """
-    bio = (contact.get('bio') or '').lower()
-    source = (contact.get('source') or '').lower()
-    combined = f"{bio} {source}"
+def _sanitize_company_name(company: str) -> str:
+    """Clean company name by removing common SEO junk and domain extensions."""
+    if not company: return ""
+    clean = company.strip()
     
-    for keyword, role_phrase in ROLE_KEYWORDS_MAP.items():
-        if keyword in combined:
-            return role_phrase
+    # ─── SMART SPACING ───
+    # 1. CamelCase split
+    clean = re.sub(r'([a-z])([A-Z])', r'\1 \2', clean)
     
-    # Default fallback: just use empty string so search stays broad
-    return ''
+    # 2. Multi-Pass Industry Split
+    keywords = [
+        'entertainment', 'motionpictures', 'productions', 'production', 
+        'studios', 'studio', 'films', 'film', 'media', 'works', 'creative', 
+        'solutions', 'digital', 'global', 'agency', 'group', 'services', 
+        'official', 'vfx', 'corp', 'company', 'pictures', 'house', 'collective',
+        'mantra', 'wadi', 'power', 'hour', 'baba', 'chillies',
+        'stories', 'maverick', 'jugaad', 'zoom', 'cine', 'that', 'matter'
+    ]
+    prefixes = ['the', 'wild', 'magic', 'stories', 'red', 'zoom', 'cine', 'jugaad', 'maverick', 'goodfellas', 'star', 'grand', 'royal']
+    
+    for _ in range(3):
+        n_clean = clean
+        parts = n_clean.split()
+        cleaned_parts = []
+        for word in parts:
+            if len(word) > 3:
+                # Prefix split
+                for p in prefixes:
+                    if word.lower().startswith(p) and len(word) > len(p) + 2:
+                        word = word[:len(p)] + ' ' + word[len(p):]
+                        break
+                # Keyword split
+                for k in keywords:
+                    low = word.lower()
+                    if k in low:
+                        idx = low.find(k)
+                        if idx > 0 and word[idx-1] != ' ':
+                            word = word[:idx] + ' ' + word[idx:]
+                            break
+            cleaned_parts.append(word)
+        clean = ' '.join(cleaned_parts)
+        if clean == n_clean: break
 
-
-def extract_linkedin_slug(linkedin_url: str) -> Optional[str]:
-    """
-    Extract the username slug from a LinkedIn profile URL.
-    e.g. 'https://ca.linkedin.com/in/carolyn-mauricette-0438321' -> 'carolyn-mauricette-0438321'
-    Returns None if the URL is not a profile URL (e.g. posts, activity).
-    """
-    if not linkedin_url:
-        return None
-    # Match /in/some-slug pattern
-    match = re.search(r'linkedin\.com/in/([a-zA-Z0-9_-]+)', linkedin_url)
-    if match:
-        return match.group(1).rstrip('/')
-    return None
-
-
-def scrape_linkedin_apify(username_slug: str) -> dict:
-    """
-    Scrape a LinkedIn profile using apimaestro/linkedin-profile-full-sections-scraper.
+    # 3. Remove domain extensions
+    clean = re.sub(r'\.(com|net|org|in|biz|ai|co\.in|io)$', '', clean, flags=re.IGNORECASE)
     
-    Returns a dict with:
-        - 'email': str or None
-        - 'headline': str or None
-        - 'current_company': str or None
-        - 'current_title': str or None
-        - 'about': str or None
-        - 'location': str or None
-        - 'raw': full response dict
-    """
-    result = {
-        'email': None, 'headline': None, 'current_company': None,
-        'current_title': None, 'about': None, 'location': None, 'raw': None
-    }
-    
-    if not APIFY_API_KEY or not ApifyClient:
-        logger.warning("  Apify not available (missing API key or apify-client package)")
-        return result
-    
+    # 4. Remove common junk words
+    junk = ['ltd', 'pvt', 'limited', 'private', 'inc', 'corp', 'corporation', 'llp', 'llc']
+    for j in junk:
+        clean = re.sub(rf'\b{j}\b\.?', '', clean, flags=re.IGNORECASE)
+        
+    return clean.strip(' -|–—.,;:"\' ').title()
+
+def _extract_brand_from_url(url: str) -> str:
+    """Extract a clean brand name from a URL with robust word splitting."""
+    if not url: return ""
     try:
-        client = ApifyClient(APIFY_API_KEY)
-        run_input = {
-            "includeEmail": True,
-            "usernames": [username_slug]
-        }
+        from urllib.parse import urlparse
+        domain = urlparse(url).netloc.lower()
+        if domain.startswith('www.'):
+            domain = domain[4:]
         
-        logger.info(f"  Apify: scraping LinkedIn profile '{username_slug}'...")
-        run = client.actor(APIFY_ACTOR).call(run_input=run_input, timeout_secs=120)
+        # 1. Remove common extensions
+        brand = re.sub(r'\.(com|in|org|net|biz|co\.in|me|tv|us|ae|io|ai|live)$', '', domain, flags=re.IGNORECASE)
         
-        items = list(client.dataset(run['defaultDatasetId']).iterate_items())
-        if not items:
-            logger.warning(f"  Apify: no data returned for '{username_slug}'")
-            return result
+        # 2. Handle hyphens and underscores (direct separators)
+        brand = brand.replace('-', ' ').replace('_', ' ')
         
-        item = items[0]
+        # 3. ─── SMART SPACING ───
+        # A. CamelCase split (if any casing survived)
+        brand = re.sub(r'([a-z])([A-Z])', r'\1 \2', brand)
         
-        # Check for errors
-        if item.get('message') and 'No profile found' in item.get('message', ''):
-            logger.warning(f"  Apify: profile not found for '{username_slug}'")
-            return result
-        
-        basic = item.get('basic_info', {})
-        result['raw'] = item
-        result['headline'] = basic.get('headline')
-        result['about'] = basic.get('about')
-        result['current_company'] = basic.get('current_company')
-        result['email'] = basic.get('email')  # may be None
-        
-        loc = basic.get('location', {})
-        if isinstance(loc, dict):
-            result['location'] = loc.get('full') or loc.get('city')
-        elif isinstance(loc, str):
-            result['location'] = loc
-        
-        # Extract current title from experience
-        experiences = item.get('experience', [])
-        for exp in experiences:
-            if exp.get('is_current'):
-                result['current_title'] = exp.get('title')
-                # If basic_info didn't have current_company, grab from experience
-                if not result['current_company']:
-                    result['current_company'] = exp.get('company')
-                break
-        
-        logger.info(f"  Apify: got profile data. Email={result['email']}, Company={result['current_company']}")
-        
-    except Exception as e:
-        logger.warning(f"  Apify scraping error for '{username_slug}': {e}")
-    
-    return result
-
-
-def scrape_contact_page_apify(domain: str) -> list:
-    """
-    Use vdrmota/contact-info-scraper to crawl a company website's contact page
-    and extract email addresses.
-    
-    Args:
-        domain: Company domain (e.g. 'sundance.org')
-    
-    Returns:
-        List of email addresses found
-    """
-    if not APIFY_API_KEY or not ApifyClient or not domain:
-        return []
-    
-    try:
-        client = ApifyClient(APIFY_API_KEY)
-        
-        # Build URLs to scrape — the main domain and common contact pages
-        start_urls = [
-            {'url': f'https://{domain}'},
-            {'url': f'https://{domain}/contact'},
-            {'url': f'https://{domain}/about'},
-            {'url': f'https://www.{domain}/contact'},
+        # B. Multi-Pass Industry Split (Split mashed words like 'laseraway' or 'framesinaction')
+        keywords = [
+            'entertainment', 'motionpictures', 'productions', 'production', 
+            'studios', 'studio', 'films', 'film', 'media', 'works', 'creative', 
+            'solutions', 'digital', 'global', 'agency', 'group', 'services', 
+            'official', 'vfx', 'corp', 'company', 'pictures', 'house', 'collective',
+            'mantra', 'wadi', 'power', 'hour', 'baba', 'chillies', 'view', 'point',
+            'stories', 'maverick', 'jugaad', 'zoom', 'cine', 'that', 'matter', 'away', 'frames', 'action'
         ]
+        prefixes = ['the', 'wild', 'magic', 'stories', 'red', 'zoom', 'cine', 'jugaad', 'maverick', 'goodfellas', 'star', 'grand', 'royal']
         
-        run_input = {
-            'startUrls': start_urls,
-            'maxDepth': 1,
-            'maxRequestsPerStartUrl': 3,
-            'sameDomain': True,
-        }
-        
-        logger.info(f"  Apify: scraping contact page for domain '{domain}'...")
-        run = client.actor('vdrmota/contact-info-scraper').call(run_input=run_input, timeout_secs=120)
-        
-        emails = []
-        seen = set()
-        for item in client.dataset(run['defaultDatasetId']).iterate_items():
-            for email in item.get('emails', []):
-                email_lower = email.lower()
-                if email_lower not in seen and _is_valid_email(email_lower):
-                    emails.append(email)
-                    seen.add(email_lower)
-        
-        if emails:
-            logger.info(f"  Apify contact scraper found {len(emails)} email(s): {emails}")
-        else:
-            logger.info(f"  Apify contact scraper: no emails found on {domain}")
-        
-        return emails
-        
-    except Exception as e:
-        logger.warning(f"  Apify contact scraper error for '{domain}': {e}")
-        return []
+        for _ in range(3):
+            old_brand = brand
+            words = brand.split()
+            cleaned_words = []
+            for word in words:
+                if len(word) > 3:
+                    # Prefix split
+                    for p in prefixes:
+                        if word.lower().startswith(p) and len(word) > len(p) + 2:
+                            word = word[:len(p)] + ' ' + word[len(p):]
+                            break
+                    # Keyword split
+                    for k in keywords:
+                        low = word.lower()
+                        if k in low:
+                            idx = low.find(k)
+                            # Split if keyword is in the middle of a word AND not already separated
+                            if idx > 0 and word[idx-1] != ' ':
+                                word = word[:idx] + ' ' + word[idx:]
+                                break
+                            # Also split if keyword is at the start but followed by more characters
+                            elif idx == 0 and len(word) > len(k) + 2:
+                                word = word[:len(k)] + ' ' + word[len(k):]
+                                break
+                cleaned_words.append(word)
+            brand = ' '.join(cleaned_words)
+            if brand == old_brand: break
 
+        return brand.title().strip()
+    except:
+        return ""
 
-def extract_domain_serper(company_name: str) -> Optional[str]:
-    """Find the official website domain for a company using Serper."""
-    if not SERPER_API_KEY or not company_name:
+def _extract_human_name_from_email(email: str) -> Optional[str]:
+    """
+    Attempt to extract a human name from a personal-looking email address.
+    e.g. 'tarun.gangwani@...' -> 'Tarun Gangwani'
+    """
+    if not email: return None
+    local_part = email.split('@')[0].lower()
+    
+    # Skip generic prefixes
+    generic = ['info', 'contact', 'hello', 'admin', 'support', 'office', 'team', 'press', 'mail', 'projects', 'careers', 'vfx', 'hr']
+    if any(local_part == g or local_part.startswith(g + '.') or local_part.startswith(g + '_') for g in generic):
         return None
         
-    try:
-        headers = {
-            'X-API-KEY': SERPER_API_KEY,
-            'Content-Type': 'application/json'
-        }
-        # Dork to find official website, excluding linkedin
-        query = f'"{company_name}" ("official website" OR site OR .com OR .org OR .io) -inurl:linkedin'
-        payload = {'q': query, 'num': 3}
+    # Handle patterns like first.last, first_last, or just first
+    name_parts = re.split(r'[\._-]', local_part)
+    if len(name_parts) >= 1:
+        # We'll be strictly about real names. Skip if a part is only 1-2 chars long.
+        # e.g. 'vs@...' -> None. 'tarun@...' -> 'Tarun'.
+        clean_parts = [re.sub(r'\d+', '', p).title() for p in name_parts if len(re.sub(r'\d+', '', p)) > 2]
         
-        response = requests.post(SERPER_URL, headers=headers, json=payload, timeout=15)
-        data = response.json()
-        
-        for result in data.get('organic', []):
-            url = result.get('link', '')
-            # Extract domain from url
-            match = re.search(r'https?://(?:www\.)?([^/]+)', url)
-            if match:
-                domain = match.group(1).lower()
-                # Skip known directories/socials
-                if not any(skip in domain for skip in ['facebook', 'instagram', 'twitter', 'wikipedia', 'imdb']):
-                    return domain
-    except Exception as e:
-        logger.warning(f"Domain extraction error for {company_name}: {e}")
+        if clean_parts:
+            return ' '.join(clean_parts[:2])
+            
     return None
 
+def guess_role_keyword(contact: dict, project_info: dict = None) -> str:
+    """
+    Use the original source query or project niche to determine the best role keyword.
+    """
+    # 1. Try original source query (most specific)
+    source = (contact.get('source') or '').lower()
+    if source:
+        cleaned = re.sub(r'site:\S+', '', source)
+        parts = ' '.join(cleaned.split())
+        if parts: return parts
+    
+    # 2. Try Bio match against map
+    bio = (contact.get('bio') or '').lower()
+    for keyword, role_phrase in ROLE_KEYWORDS_MAP.items():
+        if keyword in bio:
+            return role_phrase
+            
+    # 3. Dynamic Fallback based on Project Context
+    if project_info:
+        p_name = project_info.get('name', '').lower()
+        p_desc = project_info.get('description', '').lower()
+        
+        if 'film' in p_name or 'movie' in p_name or 'festival' in p_name:
+            return 'producer'
+        if 'real estate' in p_name or 'realtor' in p_name:
+            return 'realtor'
+        if 'law' in p_name or 'attorney' in p_name:
+            return 'attorney'
+        if 'agency' in p_name or 'marketing' in p_name:
+            return 'founder'
+            
+    # 4. Global fallback
+    return 'owner'
 
-def find_emails_serper(name: str, role_keyword: str = '', domain: str = None) -> list[str]:
+def find_emails_serper(name: str, role_keyword: str = '') -> list[str]:
     """
     Find email addresses by searching Google via Serper.
-    Runs multiple targeted dorks based on available info.
-    Returns ALL valid emails found across results.
+    Query used: [Name] [Role] email "@"
     """
     if not SERPER_API_KEY:
         return []
-    
+        
     found_emails = []
     seen_emails = set()
     
-    queries_to_run = []
-    
-    # 1. Broad search: name + role + email
-    broad_parts = [name]
+    # 1. Broad search: name + role + email + "@" (Unquoted)
+    query_parts = [name]
     if role_keyword:
-        broad_parts.append(role_keyword)
-    broad_parts.append('email')
-    queries_to_run.append(' '.join(broad_parts))
+        query_parts.append(role_keyword)
+    # Adding "@" ensures Google prioritizes results with email addresses
+    query_parts.extend(['email', '"@"'])
     
-    # 2. Domain-specific searches
-    if domain:
-        # e.g., site:sundance.org "John Doe" email
-        queries_to_run.append(f'site:{domain} "{name}" email')
-        # e.g., site:sundance.org contact OR email
-        queries_to_run.append(f'site:{domain} contact OR email')
-        # e.g., "John Doe" "@sundance.org"
-        queries_to_run.append(f'"{name}" "@{domain}"')
+    query = ' '.join(query_parts)
     
     headers = {
         'X-API-KEY': SERPER_API_KEY,
         'Content-Type': 'application/json'
     }
     
-    for query in queries_to_run:
-        try:
-            payload = {'q': query, 'num': 10}
-            logger.info(f"  Email search query: {query}")
-            
-            response = requests.post(SERPER_URL, headers=headers, json=payload, timeout=15)
-            data = response.json()
-            
-            extract_emails_from_serper_data(data, found_emails, seen_emails)
-            
-            # If we found valid emails from the primary broad search, no need to keep spamming targeted 
-            # domain searches which might pull in unrelated company emails like info@ or jobs@
-            if len(found_emails) > 0:
-                logger.info(f"    -> Found {len(found_emails)} emails, stopping further queries.")
-                break
-            
-        except Exception as e:
-            logger.warning(f"Serper email search error for query '{query}': {e}")
-    
-    return found_emails
+    try:
+        payload = {'q': query, 'num': 10}
+        logger.info(f"  Email search query: {query}")
+        
+        response = requests.post(SERPER_URL, headers=headers, json=payload, timeout=15)
+        data = response.json()
+        
+        # Check AI snippet
+        ai_snippet = data.get('answerBox', {}).get('snippet', '') or ''
+        ai_answer = data.get('answerBox', {}).get('answer', '') or ''
+        knowledge_desc = data.get('knowledgeGraph', {}).get('description', '') or ''
+        
+        for text_block in [ai_snippet, ai_answer, knowledge_desc]:
+            emails = re.findall(r'[\w.+-]+@[\w-]+\.[\w.-]+', text_block)
+            for email in emails:
+                email = email.strip().rstrip('.,;:)!% ]').strip()
+                email_lower = email.lower()
+                if email_lower not in seen_emails and _is_valid_email(email_lower):
+                    found_emails.append(email)
+                    seen_emails.add(email_lower)
+        
+        # Scan organic results
+        for result in data.get('organic', []):
+            text = f"{result.get('title', '')} {result.get('snippet', '')}"
+            emails = re.findall(r'[\w.+-]+@[\w-]+\.[\w.-]+', text)
+            for email in emails:
+                email_lower = email.lower()
+                if email_lower not in seen_emails and _is_valid_email(email_lower):
+                    found_emails.append(email)
+                    seen_emails.add(email_lower)
 
-def extract_emails_from_serper_data(data: dict, found_emails: list, seen_emails: set):
-    """Helper to regex emails out of Serper JSON response."""
-    # Check AI snippet / knowledge graph first (Google's AI answer)
-    ai_snippet = data.get('answerBox', {}).get('snippet', '') or ''
-    ai_answer = data.get('answerBox', {}).get('answer', '') or ''
-    knowledge_desc = data.get('knowledgeGraph', {}).get('description', '') or ''
-    
-    for text_block in [ai_snippet, ai_answer, knowledge_desc]:
-        emails = re.findall(r'[\w.+-]+@[\w-]+\.[\w.-]+', text_block)
-        for email in emails:
-            email_lower = email.lower()
-            if email_lower not in seen_emails and _is_valid_email(email_lower):
-                found_emails.append(email)
-                seen_emails.add(email_lower)
-    
-    # Scan organic results
-    for result in data.get('organic', []):
-        text = f"{result.get('title', '')} {result.get('snippet', '')}"
-        emails = re.findall(r'[\w.+-]+@[\w-]+\.[\w.-]+', text)
-        for email in emails:
-            email_lower = email.lower()
-            if email_lower not in seen_emails and _is_valid_email(email_lower):
-                found_emails.append(email)
-                seen_emails.add(email_lower)
+        if len(found_emails) > 0:
+            logger.info(f"    -> Found {len(found_emails)} emails.")
+            
+    except Exception as e:
+        logger.warning(f"Serper email search error for query '{query}': {e}")
+        
+    return found_emails
 
 
 def _is_valid_email(email: str) -> bool:
     """Filter out junk/generic emails."""
     skip_patterns = [
-        'example.com', 'email.com', 'noreply', 'support@', 'info@',
+        'example.com', 'email.com', 'mail.com', 'noreply', 'support@', 'info@',
         'admin@', 'webmaster@', 'no-reply', 'donotreply', 'test@',
         'sentry.io', 'github.com', 'placeholder', 'domain.com',
         'yourname@', 'name@', 'user@', 'sample'
@@ -347,23 +307,22 @@ def _is_valid_email(email: str) -> bool:
 def find_instagram_serper(name: str, role_keyword: str = '') -> Optional[str]:
     """
     Find Instagram handle via Serper search.
-    Uses unquoted name + role keyword + site:instagram.com.
-    Extracts handle from ANY Instagram URL (profiles, posts, reels).
+    Query: [Name] [Role] instagram (unquoted)
     """
     if not SERPER_API_KEY:
         return None
-    
+        
     try:
         headers = {
             'X-API-KEY': SERPER_API_KEY,
             'Content-Type': 'application/json'
         }
         
-        # Build query: name (unquoted) + role keyword + site:instagram.com
+        # Build query: name (unquoted) + role keyword + instagram
         query_parts = [name]
         if role_keyword:
             query_parts.append(role_keyword)
-        query_parts.append('site:instagram.com')
+        query_parts.append('instagram')
         query = ' '.join(query_parts)
         
         payload = {
@@ -375,108 +334,71 @@ def find_instagram_serper(name: str, role_keyword: str = '') -> Optional[str]:
         response = requests.post(SERPER_URL, headers=headers, json=payload, timeout=15)
         data = response.json()
         
-        # Generic IG pages that are NOT handles
         skip_handles = {'explore', 'accounts', 'about', 'tags', 'locations', 'stories', 'directory'}
         
         for result in data.get('organic', []):
             url = result.get('link', '')
             
-            # If it's a post or reel, return the full URL instead of the poster's handle
-            # (since the prospect is likely just tagged in the caption)
+            # Post/Reel logic - retain URL
             if '/p/' in url or '/reel/' in url or '/tv/' in url:
                 return url
                 
-            # Otherwise, extract the profile handle
+            # Profile logic - Extract handle
             match = re.search(r'instagram\.com/([a-zA-Z0-9_.]+)', url)
             if match:
                 handle = match.group(1)
                 # Filter out generic Instagram pages
                 if handle.lower() not in skip_handles and handle.lower() not in ['p', 'reel', 'tv']:
                     return f"@{handle}"
+                    
     except Exception as e:
         logger.warning(f"Instagram search error for {name}: {e}")
-    
+        
     return None
 
 
-def _score_email(email: str, name: str, domain: str, source: str) -> int:
+def _score_email(email: str, name: str) -> int:
     """
     Score an email candidate on a 0-100 confidence scale.
-    
-    Scoring factors:
-        - Source reliability: apify_linkedin > apify_contact_page > serper
-        - Name match: does the email contain the prospect's first/last name?
-        - Domain match: does the email domain match the company domain?
-        - Generic penalty: info@, submissions@, admin@ get penalized
+    Since we only use Serper now, we just check name match and penalize generics.
     """
-    score = 0
+    score = 15 # Base score for Serper sourced emails
     email_lower = email.lower()
     local_part = email_lower.split('@')[0]
-    email_domain = email_lower.split('@')[1] if '@' in email_lower else ''
     
-    # Source base score
-    source_scores = {
-        'apify_linkedin': 40,      # Directly from their LinkedIn profile
-        'apify_contact_page': 25,  # From company website
-        'serper': 15,              # Regex from Google snippets
-    }
-    score += source_scores.get(source, 10)
-    
-    # Name match bonus (huge signal — email contains their name)
+    # Name match bonus
     name_parts = name.lower().split()
     first_name = name_parts[0] if name_parts else ''
     last_name = name_parts[-1] if len(name_parts) > 1 else ''
     
     if first_name and last_name:
         if first_name in local_part and last_name in local_part:
-            score += 35  # firstname.lastname@ — very high confidence
+            score += 35
         elif first_name in local_part or last_name in local_part:
-            score += 20  # partial name match
+            score += 20
         elif first_name[0] in local_part and last_name in local_part:
-            score += 15  # initial + lastname (e.g. cmauricette@)
-    
-    # Domain match bonus
-    if domain and email_domain and domain.lower() in email_domain:
-        score += 15  # email is @companydomain.com
-    
+            score += 15
+            
     # Generic email penalty
     generic_prefixes = ['info', 'contact', 'hello', 'admin', 'support', 
                         'submissions', 'general', 'office', 'team', 'press',
                         'media', 'marketing', 'sales', 'jobs', 'careers', 'hr']
     if any(local_part.startswith(g) for g in generic_prefixes):
-        score -= 20  # It's a shared/generic inbox, not personal
-    
+        score -= 20
+        
     return max(0, min(100, score))
 
 
-def enrich_single_contact(contact: dict) -> dict:
+def enrich_single_contact(contact: dict, project_info: dict = None) -> Optional[dict]:
     """
-    Enrich a single contact with LinkedIn profile data, email(s), and Instagram.
-    
-    IMPORTANT: This function follows "supplement only" logic — it will NOT
-    overwrite fields that already have values (e.g. from GrowthScout import).
-    It only fills in blanks.
-    
-    Flow:
-        1. If contact has a LinkedIn URL → scrape via Apify (profile data + email attempt)
-        2. Extract company domain
-        3. Run ALL email sources in parallel, collect candidates
-        4. Score each candidate and pick the best
-        5. Find Instagram via Serper
-    
-    Returns:
-        Dict of enriched fields to update
+    Enrich contact via simple Serper queries using project context.
     """
     name = contact.get('name', '')
-    role_keyword = guess_role_keyword(contact)
-    company_name = contact.get('company') or contact.get('source') or ''
-    linkedin_url = contact.get('linkedin_url') or ''
+    role_keyword = guess_role_keyword(contact, project_info)
     
-    # Check what data the contact ALREADY has (e.g. from GrowthScout)
     existing_email = (contact.get('email') or '').strip()
     existing_instagram = (contact.get('instagram') or '').strip()
     
-    # Parse existing enrichment_data to merge into, not replace
     existing_enrichment = contact.get('enrichment_data')
     if isinstance(existing_enrichment, str):
         try:
@@ -485,95 +407,101 @@ def enrich_single_contact(contact: dict) -> dict:
             existing_enrichment = {}
     elif not isinstance(existing_enrichment, dict):
         existing_enrichment = {}
-    
+        
+    # ── SMART SKIP ──
+    # If both are present AND we have verification data, skip.
+    has_verif = existing_enrichment.get('verification_status') is not None
+    if existing_email and existing_instagram and has_verif:
+        logger.info(f"  ⏭️  Skipping entire enrichment — Email, Instagram, and Verification present.")
+        return None
+
     updates = {
-        'enrichment_data': existing_enrichment.copy(),  # Start from existing, merge new
+        'enrichment_data': existing_enrichment.copy(),
         'status': 'enriched',
         'updated_at': datetime.utcnow().isoformat()
     }
+
+    # Determine if existing email has verification status
+    has_verif = existing_enrichment.get('verification_status') is not None
     
-    # Collect ALL email candidates from ALL sources: (email, source_tag)
-    all_candidates = []
-    
-    # ── Step 0: Apify LinkedIn Scrape ──────────────────────────────────────
-    slug = extract_linkedin_slug(linkedin_url)
-    if slug:
-        apify_data = scrape_linkedin_apify(slug)
+    # ── SMART SKIP ──
+    # If both are present AND we have verification data, skip.
+    if existing_email and existing_instagram and has_verif:
+        logger.info(f"  ⏭️  Skipping entire enrichment — Email, Instagram, and Verification present.")
+        return None
         
-        # Store profile data in enrichment_data (always supplement these)
-        if apify_data.get('headline') and not updates['enrichment_data'].get('linkedin_headline'):
-            updates['enrichment_data']['linkedin_headline'] = apify_data['headline']
-        if apify_data.get('current_company'):
-            if not updates['enrichment_data'].get('linkedin_company'):
-                updates['enrichment_data']['linkedin_company'] = apify_data['current_company']
-            if not company_name:
-                company_name = apify_data['current_company']
-        if apify_data.get('current_title') and not updates['enrichment_data'].get('linkedin_title'):
-            updates['enrichment_data']['linkedin_title'] = apify_data['current_title']
-        if apify_data.get('about') and not updates['enrichment_data'].get('linkedin_about'):
-            updates['enrichment_data']['linkedin_about'] = apify_data['about']
-        if apify_data.get('location') and not updates['enrichment_data'].get('linkedin_location'):
-            updates['enrichment_data']['linkedin_location'] = apify_data['location']
-        
-        if apify_data.get('email'):
-            all_candidates.append((apify_data['email'], 'apify_linkedin'))
-    
-    # ── Step 1: Domain Extraction ──────────────────────────────────────────
-    domain = updates['enrichment_data'].get('company_domain')  # Reuse existing if available
-    if not domain and company_name:
-        domain = extract_domain_serper(company_name)
-        if domain:
-            updates['enrichment_data']['company_domain'] = domain
-            logger.info(f"  Extracted domain: {domain}")
-    
-    # ── Only search for email if contact doesn't already have one ─────────
+    # ── EMAIL ENRICHMENT AND VERIFICATION ──
     if not existing_email:
-        # ── Step 2: Serper Email Dorks ────────────────────────────────────
-        serper_emails = find_emails_serper(name, role_keyword, domain)
-        for em in serper_emails:
-            all_candidates.append((em, 'serper'))
+        serper_emails = find_emails_serper(name, role_keyword)
         
-        # ── Step 2.5: Apify Contact Page Scraper ─────────────────────────
-        if domain:
-            page_emails = scrape_contact_page_apify(domain)
-            for em in page_emails:
-                all_candidates.append((em, 'apify_contact_page'))
-        
-        # ── Confidence Scoring: pick the best email ──────────────────────
-        if all_candidates:
-            # Deduplicate while preserving best source
-            seen = {}
-            for em, src in all_candidates:
-                em_lower = em.lower()
-                if em_lower not in seen:
-                    seen[em_lower] = (em, src)
-                else:
-                    existing_src = seen[em_lower][1]
-                    source_rank = {'apify_linkedin': 3, 'apify_contact_page': 2, 'serper': 1}
-                    if source_rank.get(src, 0) > source_rank.get(existing_src, 0):
-                        seen[em_lower] = (em, src)
-            
+        if serper_emails:
             scored = []
-            for em_lower, (em, src) in seen.items():
-                score = _score_email(em, name, domain, src)
-                scored.append((score, em, src))
-                logger.info(f"    Email candidate: {em} (source={src}, score={score})")
-            
+            for em in serper_emails:
+                score = _score_email(em, name)
+                scored.append((score, em))
+                logger.info(f"    Email candidate: {em} (score={score})")
+                
             scored.sort(key=lambda x: x[0], reverse=True)
             
-            best_score, best_email, best_source = scored[0]
-            updates['email'] = best_email
-            updates['enrichment_data']['email_source'] = best_source
-            updates['enrichment_data']['email_confidence'] = best_score
+            valid_found = False
+            for best_score, best_email in scored:
+                if best_score < 10:
+                    logger.info("  Skipping remaining candidates (score < 10)")
+                    break
+                    
+                logger.info(f"  Verifying candidate: {best_email} (score={best_score})...")
+                v_status, v_reason = check_email(best_email)
+                logger.info(f"  Verification result: {v_status} ({v_reason})")
+                
+                if v_status == 'invalid':
+                    logger.warning(f"  ❌ Discarding invalid email: {best_email}")
+                    continue  # Try next candidate
+                    
+                # Valid or risky email found -> save it
+                updates['email'] = best_email
+                logger.info(f"  ✅ Kept email: {best_email} (confidence={best_score}, status={v_status})")
+                
+                # ── HUMAN NAME EXTRACTION ──
+                # If current name is likely a company placeholder, try to extract a real human name
+                current_name_clean = name.lower().strip()
+                current_company_clean = (contact.get('company') or '').lower().strip()
+                if current_name_clean == current_company_clean or not current_name_clean:
+                    human_name = _extract_human_name_from_email(best_email)
+                    if human_name:
+                        logger.info(f"  👤 Extracted human name from email: {human_name}")
+                        updates['name'] = human_name
+                    else:
+                        # Clear robotic name/placeholder so template falls back to "there"
+                        logger.info(f"  🤖 No human name found; clearing placeholder '{name}' for 'there' fallback.")
+                        updates['name'] = ""
+
+                updates['enrichment_data']['email_source'] = 'serper'
+                updates['enrichment_data']['email_confidence'] = best_score
+                updates['enrichment_data']['verification_status'] = v_status
+                updates['enrichment_data']['verification_reason'] = v_reason
+                valid_found = True
+                break
+                
+            if not valid_found:
+                logger.warning(f"  ❌ All email candidates were invalid or below score threshold.")
+                updates['email'] = None
+                
             updates['enrichment_data']['email_candidates'] = [
-                {'email': em, 'source': src, 'confidence': sc}
-                for sc, em, src in scored
+                {'email': em, 'source': 'serper', 'confidence': sc}
+                for sc, em in scored
             ]
-            logger.info(f"  ✅ Best email: {best_email} (source={best_source}, confidence={best_score})")
     else:
-        logger.info(f"  ⏭️  Skipping email search — contact already has email: {existing_email}")
-    
-    # ── Only search for Instagram if contact doesn't already have one ─────
+        # Check if we need to verify the existing email
+        if not has_verif:
+            logger.info(f"  Verifying EXISTING email: {existing_email}...")
+            v_status, v_reason = check_email(existing_email)
+            logger.info(f"  Verification result: {v_status} ({v_reason})")
+            updates['enrichment_data']['verification_status'] = v_status
+            updates['enrichment_data']['verification_reason'] = v_reason
+        else:
+            logger.info(f"  ⏭️  Skipping email search — contact already has verified email: {existing_email}")
+        
+    # ── INSTAGRAM ENRICHMENT ──
     if not existing_instagram:
         instagram = find_instagram_serper(name, role_keyword)
         if instagram:
@@ -582,21 +510,24 @@ def enrich_single_contact(contact: dict) -> dict:
             logger.info(f"  Found Instagram: {instagram}")
     else:
         logger.info(f"  ⏭️  Skipping Instagram search — contact already has: {existing_instagram}")
-    
-    updates['enrichment_data'] = json.dumps(updates['enrichment_data'])
+    # ── BRAND EXTRACTION FROM URL ──
+    # User requested to use URL extraction to fix name and company for non-nurtured leads.
+    if contact.get('status') in ['new', 'enriched']:
+        website_url = contact.get('website') or existing_enrichment.get('website') or contact.get('source_url')
+        if website_url:
+            clean_brand = _extract_brand_from_url(website_url)
+            if clean_brand and len(clean_brand) > 2:
+                updates['name'] = updates.get('name') or clean_brand # Keep human name if found, else brand
+                updates['company'] = clean_brand
+                logger.info(f"  🏢 URL Brand Extraction: {clean_brand}")
+            
+    # Remove redundant json.dumps() - Supabase SDK handles dict -> jsonb automatically.
+    # updates['enrichment_data'] = json.dumps(updates['enrichment_data'])
     
     return updates
 
 
-def enrich_contacts(limit: int = 50, contact_ids: list = None, dry_run: bool = False) -> dict:
-    """
-    Enrich contacts in batch.
-    
-    Args:
-        limit: Max contacts to enrich per run
-        contact_ids: Optional list of specific contact IDs to enrich (bypasses status='new' check)
-        dry_run: If True, don't update Supabase
-    """
+def enrich_contacts(limit: int = 50, project_id: str = None, contact_ids: list = None, dry_run: bool = False) -> dict:
     from supabase import create_client
     
     supabase_url = os.getenv('SUPABASE_URL')
@@ -605,14 +536,25 @@ def enrich_contacts(limit: int = 50, contact_ids: list = None, dry_run: bool = F
     if not supabase_url or not supabase_key:
         logger.error("Supabase credentials not configured")
         return {'error': 'No Supabase credentials'}
-    
+        
     supabase = create_client(supabase_url, supabase_key)
     
-    # Fetch contacts needing enrichment
+    # Fetch Project Info once for context
+    project_info = {}
+    if project_id:
+        p_res = supabase.table('projects').select('name, description').eq('id', project_id).limit(1).execute()
+        if p_res.data: project_info = p_res.data[0]
+        
     query = supabase.table('contacts').select('*')
     if contact_ids and len(contact_ids) > 0:
-        query = query.in_('id', contact_ids)
+        logger.info(f"  Fetching specific contact IDs: {len(contact_ids)}")
+        # Use .range(0, 1000) to ensure we get everything even if PostgREST defaults to 100
+        query = query.in_('id', contact_ids).range(0, 1000)
+    elif project_id:
+        logger.info(f"  Fetching pending contacts for project {project_id} (limit {limit})")
+        query = query.eq('project_id', project_id).eq('status', 'new').limit(limit)
     else:
+        logger.info(f"  Fetching pending contacts with limit: {limit}")
         query = query.eq('status', 'new').limit(limit)
         
     result = query.execute()
@@ -624,37 +566,41 @@ def enrich_contacts(limit: int = 50, contact_ids: list = None, dry_run: bool = F
     
     for i, contact in enumerate(contacts):
         try:
+            # Determine project_id if not passed
+            pid = project_id or contact.get('project_id')
+            if pid and not project_info:
+                p_res = supabase.table('projects').select('name, description').eq('id', pid).limit(1).execute()
+                if p_res.data: project_info = p_res.data[0]
+
             logger.info(f"[{i+1}/{len(contacts)}] Enriching: {contact['name']}")
+            updates = enrich_single_contact(contact, project_info)
             
-            updates = enrich_single_contact(contact)
-            
-            if not dry_run:
+            if updates and not dry_run:
                 supabase.table('contacts').update(updates).eq('id', contact['id']).execute()
             
-            if updates.get('email'):
-                stats['emails_found'] += 1
-            if updates.get('instagram'):
-                stats['ig_found'] += 1
+            if updates:
+                if updates.get('email'):
+                    stats['emails_found'] += 1
+                if updates.get('instagram'):
+                    stats['ig_found'] += 1
+                stats['processed'] += 1
             
-            stats['processed'] += 1
-            
-            # Rate limiting: 1 second between contacts (2 Serper calls per contact)
             time.sleep(1)
             
         except Exception as e:
             logger.error(f"Error enriching {contact.get('name', '?')}: {e}")
             stats['errors'] += 1
-    
+            
     logger.info(f"Enrichment complete: {stats}")
     return stats
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Enrich contacts with emails and Instagram')
-    parser.add_argument('--limit', type=int, default=50, help='Max contacts to process')
-    parser.add_argument('--dry-run', action='store_true', help='Preview without saving')
-    
+    parser = argparse.ArgumentParser(description="Enrich contacts logic")
+    parser.add_argument('--limit', type=int, default=50)
+    parser.add_argument('--id', type=str, help="Specific contact ID to enrich")
     args = parser.parse_args()
     
-    stats = enrich_contacts(limit=args.limit, dry_run=args.dry_run)
-    print(json.dumps(stats, indent=2))
+    ids = [args.id] if args.id else None
+    res = enrich_contacts(limit=args.limit, contact_ids=ids)
+    print(json.dumps(res, indent=2))

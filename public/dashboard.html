@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FilmReach | Dashboard</title>
+    <title>QuickReach | Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <script>
@@ -150,9 +150,9 @@
             <div class="flex items-center gap-4">
                 <div class="flex items-center gap-2 cursor-pointer" onclick="window.location.reload()">
                     <div class="bg-gradient-to-r from-violet-600 to-indigo-600 p-1.5 rounded-lg">
-                        <i data-lucide="film" class="w-4 h-4 text-white"></i>
+                        <i data-lucide="zap" class="w-4 h-4 text-white"></i>
                     </div>
-                    <span class="text-sm font-bold text-white hidden sm:inline">Film<span
+                    <span class="text-sm font-bold text-white hidden sm:inline">Quick<span
                             class="text-violet-500">Reach</span></span>
                 </div>
 
@@ -202,9 +202,9 @@
                 <div class="flex items-center gap-2 mb-2">
                     <div
                         class="w-7 h-7 rounded-full bg-gradient-to-r from-violet-600 to-indigo-600 flex items-center justify-center text-white text-xs font-bold">
-                        F</div>
+                        Q</div>
                     <div class="flex-1 min-w-0">
-                        <p class="text-sm font-medium text-white truncate">FilmReach</p>
+                        <p class="text-sm font-medium text-white truncate">QuickReach</p>
                         <p class="text-xs text-gray-400 truncate">Admin</p>
                     </div>
                 </div>
@@ -241,8 +241,30 @@
         // =========================================================================
         // STATE
         // =========================================================================
-        let currentProjectId = localStorage.getItem('currentProjectId') || null;
         let currentTopTab = 'dashboard';
+        let currentProjectId = localStorage.getItem('currentProjectId') || null;
+
+        /** Copy text to clipboard with feedback */
+        async function copyToClipboard(text, btnElement) {
+            try {
+                await navigator.clipboard.writeText(text);
+                const originalContent = btnElement.innerHTML;
+                btnElement.innerHTML = '<i data-lucide="check" class="w-3 h-3 inline mr-1"></i> Copied!';
+                btnElement.classList.remove('text-gray-500');
+                btnElement.classList.add('text-emerald-400');
+                if (window.lucide) lucide.createIcons();
+                
+                setTimeout(() => {
+                    btnElement.innerHTML = originalContent;
+                    btnElement.classList.remove('text-emerald-400');
+                    btnElement.classList.add('text-gray-500');
+                    if (window.lucide) lucide.createIcons();
+                }, 2000);
+            } catch (err) {
+                console.error('Failed to copy: ', err);
+                showToast('Failed to copy to clipboard');
+            }
+        }
 
         // API Wrapper to auto-inject project_id
         async function apiFetch(url, options = {}) {
@@ -306,6 +328,8 @@
                 { id: 'enriched', label: 'Enriched' },
                 { id: 'icebreaker_ready', label: 'Icebreaker Ready' },
                 { id: 'in_sequence', label: 'In Sequence' },
+                { id: 'replied', label: 'Replied' },
+                { id: 'bounced', label: 'Bounced' },
                 { id: 'completed', label: 'Completed' }
             ],
             'sequences': [
@@ -416,8 +440,13 @@
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-400 mb-1">Project Description & Pitch</label>
-                            <p class="text-xs text-violet-400 mb-2">Gemini AI will use this to automatically craft your initial 12-step drip campaign templates.</p>
-                            <textarea id="newProjectDesc" rows="4" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white outline-none focus:border-violet-500 resize-y" placeholder="e.g. We are ABC.com matching CEOs with SaaS tools. First step should be a quick intro, then case studies, and eventually a polite breakup..."></textarea>
+                            <p class="text-xs text-violet-400 mb-2">Gemini AI will use this to automatically craft your initial campaign templates.</p>
+                            <textarea id="newProjectDesc" rows="3" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white outline-none focus:border-violet-500 resize-y" placeholder="e.g. We are ABC.com matching CEOs with SaaS tools..."></textarea>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-400 mb-1">Custom Sequence Instructions (Optional)</label>
+                            <p class="text-xs text-emerald-400 mb-2">Instructions like "Step 1 should be about X" or "Tone should be aggressive". This overrides defaults.</p>
+                            <textarea id="newProjectCustomInstructions" rows="3" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white outline-none focus:border-emerald-500 resize-y" placeholder="e.g. Step 1 must mention how we save companies $10k/year..."></textarea>
                         </div>
                     </div>
                     <div class="mt-6 flex gap-3">
@@ -433,6 +462,7 @@
         async function createProject() {
             const name = document.getElementById('newProjectName').value.trim();
             const desc = document.getElementById('newProjectDesc').value.trim();
+            const custom = document.getElementById('newProjectCustomInstructions').value.trim();
 
             if (!name) return alert('Enter a project name');
 
@@ -445,7 +475,7 @@
                 const res = await fetch('/api/projects', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, description: desc })
+                    body: JSON.stringify({ name, description: desc, custom_instructions: custom })
                 });
                 const data = await res.json();
                 if (data.error) throw new Error(data.error);
@@ -568,6 +598,7 @@
                             ${actionBtn('sparkles', 'Enrich Contacts', 'runEnrichment()')}
                             ${actionBtn('message-square', 'Gen Icebreakers', 'runIcebreakers()')}
                             ${actionBtn('send', 'Send Emails', 'runSendEmails()')}
+                            ${actionBtn('eraser', 'Name & Biz Cleaner', 'runCleanup()')}
                         </div>
                     </div>
                 `;
@@ -652,9 +683,16 @@
                                             <div class="text-xs text-gray-500">${s.contact_email || '—'}</div>
                                         </td>
                                         <td class="px-4 py-3">
-                                            <div class="text-gray-300">${s.subject || '—'}</div>
-                                            <div class="text-xs text-gray-600">Step ${s.step_number || i + 1}</div>
-                                            <div id="snap-body-${s.id}" class="hidden mt-2 text-xs text-gray-400 bg-gray-950 p-2 rounded max-w-sm whitespace-pre-wrap">${(s.body || '').substring(0, 500)}${(s.body || '').length > 500 ? '…' : ''}</div>
+                                            <div class="text-gray-300 font-medium">${s.subject || '—'}</div>
+                                            <div class="text-xs text-gray-500">Step ${s.step_number || i + 1}</div>
+                                            <div id="snap-body-${s.id}" class="hidden mt-2 p-3 bg-gray-950/80 border border-gray-800 rounded-lg group relative">
+                                                <div id="body-text-${s.id}" class="text-xs text-gray-400 whitespace-pre-wrap leading-relaxed">${s.body || 'No message content'}</div>
+                                                <button onclick="event.stopPropagation(); const text = document.getElementById('body-text-${s.id}').innerText; copyToClipboard(text, this)" 
+                                                    class="absolute top-2 right-2 p-1.5 bg-gray-900 border border-gray-700 rounded-md text-gray-500 hover:text-white hover:border-gray-500 transition-all flex items-center gap-1 shadow-sm">
+                                                    <i data-lucide="copy" class="w-3 h-3"></i>
+                                                    <span class="text-[10px]">Copy</span>
+                                                </button>
+                                            </div>
                                         </td>
                                         <td class="px-4 py-3 whitespace-nowrap">
                                             ${s.is_overdue
@@ -665,12 +703,14 @@
                                         </td>
                                         <td class="px-4 py-3">
                                             <div class="flex gap-1 flex-wrap" onclick="event.stopPropagation()">
-                                                ${s.contact_email ? `<button id="btn-email-${s.id}" onclick="toggleChannelDone('${s.id}', 'email', this)" class="snap-btn text-xs px-2 py-1 bg-gray-800 text-gray-400 border border-gray-700 rounded transition-colors">✉ Email</button>` : ''}
+                                                ${(_snapManualStates[s.id] = s.manual_channel || "", "")}
+                                                ${s.contact_email ? `<button id="btn-email-${s.id}" onclick="toggleChannelDone('${s.id}', 'email', this)" class="${getChannelBtnClass(s.manual_channel, 'email')}">✉ Email</button>` : ''}
                                                 ${s.clean_phone ? `<a href="https://wa.me/${s.clean_phone}" target="_blank" onclick="event.stopPropagation()" class="text-xs px-2 py-1 bg-gray-800 text-gray-400 border border-gray-700 rounded hover:bg-emerald-900/40 hover:text-emerald-300 transition-colors">📱 WA</a>` : ''}
-                                                <button id="btn-wa-${s.id}" onclick="toggleChannelDone('${s.id}', 'wa', this)" class="snap-btn text-xs px-2 py-1 bg-gray-800 text-gray-400 border border-gray-700 rounded transition-colors">✓ WA Done</button>
+                                                <button id="btn-wa-${s.id}" onclick="toggleChannelDone('${s.id}', 'wa', this)" class="${getChannelBtnClass(s.manual_channel, 'wa')}">✓ WA Done</button>
                                                 ${s.clean_ig ? `<a href="https://instagram.com/${s.clean_ig}" target="_blank" onclick="event.stopPropagation()" class="text-xs px-2 py-1 bg-gray-800 text-gray-400 border border-gray-700 rounded hover:bg-pink-900/40 hover:text-pink-300 transition-colors">📷 IG</a>` : ''}
-                                                <button id="btn-ig-${s.id}" onclick="toggleChannelDone('${s.id}', 'ig', this)" class="snap-btn text-xs px-2 py-1 bg-gray-800 text-gray-400 border border-gray-700 rounded transition-colors">✓ IG Done</button>
-                                                <button onclick="markSnapshotDone('${s.id}', 'replied', null, this)" class="text-xs px-2 py-1 bg-gray-800 text-amber-600 border border-gray-700 rounded hover:bg-amber-900/40 hover:text-amber-400 transition-colors">↩ Replied</button>
+                                                <button id="btn-ig-${s.id}" onclick="toggleChannelDone('${s.id}', 'ig', this)" class="${getChannelBtnClass(s.manual_channel, 'ig')}">✓ IG Done</button>
+                                                <button onclick="markSnapshotDone('${s.id}', 'sent', null, this)" class="text-xs px-4 py-1 bg-violet-600 hover:bg-violet-500 text-white border border-violet-500 rounded font-medium shadow-sm transition-all">Finish Task</button>
+                                                <button onclick="markSnapshotDone('${s.id}', 'replied', null, this)" class="text-xs px-2 py-1 bg-gray-800 text-amber-600 border border-gray-700 rounded hover:bg-amber-900/40 hover:text-amber-400 transition-colors ml-2">↩ Replied</button>
                                             </div>
                                         </td>
                                     </tr>
@@ -692,27 +732,60 @@
             if (el) el.classList.toggle('hidden');
         }
 
-        // Track which buttons are toggled per row
-        const _snapDone = {};
+        // Track which buttons are toggled per row (locally for quick diffs if needed, but primarily driven by manual_channel string)
+        const _snapManualStates = {};
 
-        function toggleChannelDone(id, channel, btn) {
-            const key = `${id}:${channel}`;
-            if (_snapDone[key]) {
-                // Undo
-                delete _snapDone[key];
-                btn.className = 'snap-btn text-xs px-2 py-1 bg-gray-800 text-gray-400 border border-gray-700 rounded transition-colors';
+        function getChannelBtnClass(manual_channel, channel) {
+            const isDone = (manual_channel || "").split(',').includes(channel);
+            if (!isDone) return 'snap-btn text-xs px-2 py-1 bg-gray-800 text-gray-400 border border-gray-700 rounded transition-colors hover:border-gray-500';
+            
+            const colors = { 
+                email: 'bg-violet-900/60 text-violet-300 border-violet-700', 
+                wa: 'bg-emerald-900/60 text-emerald-300 border-emerald-700', 
+                ig: 'bg-pink-900/60 text-pink-300 border-pink-700' 
+            };
+            return `snap-btn snap-btn-done text-xs px-2 py-1 ${colors[channel] || 'bg-gray-700 text-white border-gray-600'} border rounded transition-colors`;
+        }
+
+        async function toggleChannelDone(id, channel, btn) {
+            const isDone = btn.classList.contains('snap-btn-done');
+            let channels = (_snapManualStates[id] || "").split(',').filter(x => x);
+            
+            if (isDone) {
+                channels = channels.filter(c => c !== channel);
             } else {
-                // Mark done — just color the button, don't touch the row
-                _snapDone[key] = true;
-                const colors = { email: 'bg-violet-900/60 text-violet-300 border-violet-700', wa: 'bg-emerald-900/60 text-emerald-300 border-emerald-700', ig: 'bg-pink-900/60 text-pink-300 border-pink-700' };
-                btn.className = `snap-btn text-xs px-2 py-1 ${colors[channel] || 'bg-gray-700 text-white border-gray-600'} border rounded transition-colors`;
+                if (!channels.includes(channel)) channels.push(channel);
+            }
+            
+            const newValue = channels.join(',');
+            const originalClass = btn.className;
+            
+            // Optimistic UI update
+            btn.className = getChannelBtnClass(newValue, channel);
+            _snapManualStates[id] = newValue;
+
+            try {
+                const res = await apiFetch(`/api/sequences/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ manual_channel: newValue })
+                });
+                const data = await res.json();
+                if (data.error) throw new Error(data.error);
+                // Success
+            } catch (e) {
+                // Rollback on error
+                btn.className = originalClass;
+                _snapManualStates[id] = (isDone ? channels.concat(channel).join(',') : channels.filter(c => c !== channel).join(','));
+                showToast('❌ Failed to save: ' + e.message);
             }
         }
 
         async function markSnapshotDone(id, status, channel, btn) {
             if (btn) { btn.disabled = true; btn.textContent = '…'; }
             const payload = { status };
-            // Note: manual_channel column may not exist yet, only send status
+            if (status === 'sent') payload.sent_at = new Date().toISOString();
+
             try {
                 const res = await apiFetch(`/api/sequences/${id}`, {
                     method: 'PUT',
@@ -720,16 +793,24 @@
                     body: JSON.stringify(payload)
                 });
                 if (!res.ok) throw new Error('Failed');
-                // Only fade the row when replied (removes it from workflow entirely)
-                if (status === 'replied') {
-                    const row = document.getElementById(`snap-row-${id}`);
-                    if (row) { row.style.opacity = '0.3'; row.style.pointerEvents = 'none'; }
-                } else if (btn) {
-                    btn.textContent = '✓ Done';
-                    btn.className = btn.className.replace('text-amber-600', 'text-emerald-400');
+                
+                showToast(status === 'replied' ? '✅ Contact marked as Replied' : '✅ Task completed');
+                
+                // Hide or fade the row
+                const row = document.getElementById(`snap-row-${id}`);
+                if (row) { 
+                    row.style.opacity = '0.3'; 
+                    row.style.pointerEvents = 'none';
+                    if (status === 'sent') {
+                        setTimeout(() => {
+                            row.classList.add('transition-all', 'duration-500', 'scale-95', 'opacity-0');
+                            setTimeout(() => row.remove(), 500);
+                        }, 800);
+                    }
                 }
             } catch (e) {
                 if (btn) { btn.textContent = 'Error'; btn.disabled = false; }
+                showToast('❌ Error: ' + e.message);
             }
         }
 
@@ -738,7 +819,7 @@
         // =========================================================================
         async function loadContacts(area, actions) {
             const statusFilter = currentSideTab === 'all' ? '' : currentSideTab;
-            const url = `/api/contacts?limit=100${statusFilter ? `&status=${statusFilter}` : ''}`;
+            const url = `/api/contacts?limit=1000${statusFilter ? `&status=${statusFilter}` : ''}`;
             const res = await apiFetch(url);
             const data = await res.json();
             contactsCache = data.contacts || [];
@@ -750,14 +831,23 @@
                     <button onclick="runEnrichment()" class="bg-yellow-500/20 text-yellow-400 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 hover:bg-yellow-500/30">
                         <i data-lucide="sparkles" class="w-3.5 h-3.5"></i> Enrich
                     </button>
+                    <button onclick="runCamoufoxEnrichment()" class="bg-cyan-500/20 text-cyan-400 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 hover:bg-cyan-500/30" title="Stealth browser scraping — extracts email &amp; Instagram directly from website">
+                        <i data-lucide="shield" class="w-3.5 h-3.5"></i> Stealthy Enrich
+                    </button>
                     <button onclick="runIcebreakers()" class="bg-violet-500/20 text-violet-400 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 hover:bg-violet-500/30">
                         <i data-lucide="message-square" class="w-3.5 h-3.5"></i> Icebreakers
+                    </button>
+                    <button onclick="runCleanup()" class="bg-emerald-500/20 text-emerald-400 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 hover:bg-emerald-500/30">
+                        <i data-lucide="eraser" class="w-3.5 h-3.5"></i> Clean Names
                     </button>
                     <button onclick="createSequencesForSelected()" class="bg-indigo-500/20 text-indigo-400 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 hover:bg-indigo-500/30 ml-2">
                         <i data-lucide="mail-plus" class="w-3.5 h-3.5"></i> Sequence
                     </button>
                     <button onclick="deleteSelectedContacts()" class="bg-red-500/20 text-red-400 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 hover:bg-red-500/30 ml-2">
                         <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Delete
+                    </button>
+                    <button onclick="verifySelectedContacts()" class="bg-emerald-500/20 text-emerald-400 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 hover:bg-emerald-500/30 ml-auto mr-2">
+                        <i data-lucide="shield-check" class="w-3.5 h-3.5"></i> Verify Emails
                     </button>
                 </div>
             `;
@@ -775,6 +865,7 @@
                                 <th class="px-4 py-3 text-left font-medium w-8"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()" class="rounded bg-gray-800 border-gray-600"></th>
                                 <th class="px-4 py-3 text-left font-medium">Name</th>
                                 <th class="px-4 py-3 text-left font-medium">Company</th>
+                                <th class="px-4 py-3 text-left font-medium text-cyan-400">Website</th>
                                 <th class="px-4 py-3 text-left font-medium">Bio</th>
                                 <th class="px-4 py-3 text-left font-medium">Email</th>
                                 <th class="px-4 py-3 text-left font-medium">LinkedIn</th>
@@ -787,8 +878,27 @@
                             ${contacts.length ? contacts.map(c => `
                                 <tr class="hover:bg-gray-800/30" id="row-${c.id}">
                                     <td class="px-4 py-3"><input type="checkbox" class="contact-check rounded bg-gray-800 border-gray-600" value="${c.id}"></td>
-                                    <td class="px-4 py-3 font-medium text-white">${c.name}</td>
-                                    <td class="px-4 py-3 text-gray-300 max-w-[150px] truncate" title="${(() => { try { const ed = typeof c.enrichment_data === 'string' ? JSON.parse(c.enrichment_data) : (c.enrichment_data || {}); return (ed.company || ed.linkedin_company || c.source || '').replace(/"/g, '&quot;'); } catch (e) { return c.source || ''; } })()}">${(() => { try { const ed = typeof c.enrichment_data === 'string' ? JSON.parse(c.enrichment_data) : (c.enrichment_data || {}); return ed.company || ed.linkedin_company || c.source || '—'; } catch (e) { return c.source || '—'; } })()}</td>
+                                    <td class="px-4 py-3 font-medium text-white group relative">
+                                        <div class="flex items-center gap-2">
+                                            <span class="name-display cursor-pointer hover:bg-gray-800 px-1 py-0.5 rounded -ml-1 transition-colors border border-transparent hover:border-gray-700 max-w-[200px] truncate block" onclick="editContactName(this, '${c.id}')" id="name-display-${c.id}">${c.name || '—'}</span>
+                                            <i data-lucide="edit-2" class="w-3.5 h-3.5 text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer flex-shrink-0 hover:text-white" onclick="editContactName(document.getElementById('name-display-${c.id}'), '${c.id}')"></i>
+                                        </div>
+                                        <div class="hidden absolute top-1/2 -translate-y-1/2 left-3 z-10 bg-gray-900 border border-violet-500 rounded flex shadow-xl min-w-[250px]" id="name-edit-container-${c.id}">
+                                            <input type="text" class="w-full bg-transparent text-white text-sm px-2 py-1 outline-none" value="${(c.name || '').replace(/"/g, '&quot;')}" id="name-input-${c.id}" onblur="saveContactName('${c.id}')" onkeydown="if(event.key==='Enter') saveContactName('${c.id}'); if(event.key==='Escape') cancelContactName('${c.id}')">
+                                        </div>
+                                    </td>
+                                    <td class="px-4 py-3 text-gray-300 max-w-[150px] truncate" title="${(() => { try { const ed = typeof c.enrichment_data === 'string' ? JSON.parse(c.enrichment_data) : (c.enrichment_data || {}); return (c.company || ed.company || ed.linkedin_company || c.source || '').replace(/"/g, '&quot;'); } catch (e) { return c.source || ''; } })()}">${(() => { try { const ed = typeof c.enrichment_data === 'string' ? JSON.parse(c.enrichment_data) : (c.enrichment_data || {}); return c.company || ed.company || ed.linkedin_company || c.source || '—'; } catch (e) { return c.source || '—'; } })()}</td>
+                                    <td class="px-4 py-3 text-cyan-400 font-medium">
+                                        ${(() => { 
+                                            try { 
+                                                const ed = typeof c.enrichment_data === 'string' ? JSON.parse(c.enrichment_data) : (c.enrichment_data || {}); 
+                                                const w = ed.website;
+                                                if (!w) return '<span class="text-gray-600">—</span>';
+                                                const cleanW = w.startsWith('http') ? w : 'https://' + w;
+                                                return `<a href="${cleanW}" target="_blank" class="hover:underline flex items-center gap-1"><i data-lucide="external-link" class="w-3 h-3"></i> Visit</a>`;
+                                            } catch (e) { return '<span class="text-gray-600">—</span>'; } 
+                                        })()}
+                                    </td>
                                     <td class="px-4 py-3 text-gray-400 max-w-[200px] truncate" title="${(c.bio || '').replace(/"/g, '&quot;')}">${c.bio || '—'}</td>
                                     <td class="px-4 py-3 text-gray-300">${c.email || '<span class="text-gray-600">—</span>'}</td>
                                     <td class="px-4 py-3">${c.linkedin_url ? `<a href="${c.linkedin_url}" target="_blank" class="text-blue-400 hover:text-blue-300"><i data-lucide="linkedin" class="w-4 h-4 inline"></i></a>` : '<span class="text-gray-600">—</span>'}</td>
@@ -803,7 +913,7 @@
                                         </button>
                                     </td>
                                 </tr>
-                            `).join('') : '<tr><td colspan="9" class="px-4 py-12 text-center text-gray-500">No contacts yet. Run a search to discover film critics and festival programmers.</td></tr>'}
+                            `).join('') : '<tr><td colspan="10" class="px-4 py-12 text-center text-gray-500">No contacts yet. Run a search to discover business websites.</td></tr>'}
                         </tbody>
                     </table>
                 </div>
@@ -828,9 +938,100 @@
             return [...document.querySelectorAll('.contact-check:checked')].map(cb => cb.value);
         }
 
+        // ── Shared verify progress banner ──────────────────────────────────────
+        function _showVerifyBanner(total) {
+            let b = document.getElementById('verifyProgressBanner');
+            if (!b) {
+                b = document.createElement('div');
+                b.id = 'verifyProgressBanner';
+                b.className = 'fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-gray-900 border border-emerald-500 rounded-2xl px-6 py-4 shadow-2xl min-w-[380px]';
+                document.body.appendChild(b);
+            }
+            b.innerHTML = `
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm text-white font-semibold flex items-center gap-2"><span class="inline-block w-3 h-3 rounded-full bg-emerald-500 animate-pulse"></span> Verifying emails...</span>
+                    <span id="verifyProgressCount" class="text-xs text-emerald-400 font-mono">0 / ${total}</span>
+                </div>
+                <div class="w-full bg-gray-800 rounded-full h-2 mb-2">
+                    <div id="verifyProgressBar" class="bg-gradient-to-r from-emerald-500 to-teal-500 h-2 rounded-full transition-all duration-500" style="width:2%"></div>
+                </div>
+                <p class="text-xs text-gray-500">Safe to navigate away — you'll see results here.</p>
+            `;
+            return b;
+        }
+
+        function _pollVerifyProgress(jobId, total) {
+            let done = false;
+            const poll = setInterval(async () => {
+                try {
+                    const r = await apiFetch(`/api/verify-jobs/${jobId}`);
+                    const d = await r.json();
+                    const pct = Math.max(2, Math.min(100, Math.round(((d.done || 0) / total) * 100)));
+                    const bar = document.getElementById('verifyProgressBar');
+                    const cnt = document.getElementById('verifyProgressCount');
+                    if (bar) bar.style.width = pct + '%';
+                    if (cnt) cnt.textContent = `${d.done || 0} / ${total}`;
+                    if (d.status === 'done' || d.status === 'error') {
+                        clearInterval(poll);
+                        done = true;
+                        const b = document.getElementById('verifyProgressBanner');
+                        if (b) {
+                            const skipped = d.skipped || 0;
+                            const valid = d.valid || 0;
+                            const icon = d.status === 'error' ? '⚠️' : '✅';
+                            const msg = d.status === 'error'
+                                ? `Error: ${d.error || 'Unknown'}`
+                                : `${valid} clean${skipped ? `, ${skipped} bad email${skipped > 1 ? 's' : ''} cleared` : ''}`;
+                            b.innerHTML = `<div class="flex items-center justify-between"><span class="text-emerald-400 font-semibold">${icon} ${msg}</span><button onclick="document.getElementById('verifyProgressBanner').remove(); loadContent();" class="text-gray-500 hover:text-white ml-4 text-xl leading-none">&times;</button></div>`;
+                            setTimeout(() => { loadContent(); b.remove(); }, 4000);
+                        }
+                    }
+                } catch(_) {}
+            }, 2000);
+            setTimeout(() => {
+                if (!done) {
+                    clearInterval(poll);
+                    const b = document.getElementById('verifyProgressBanner');
+                    if (b) b.innerHTML = `<div class="flex items-center justify-between"><span class="text-yellow-400 font-semibold">⚠️ Still running — refresh to check.</span><button onclick="document.getElementById('verifyProgressBanner').remove()" class="text-gray-500 hover:text-white ml-4 text-xl">&times;</button></div>`;
+                }
+            }, 300000);
+        }
+
+        async function _startVerify(ids) {
+            _showVerifyBanner(ids.length);
+            try {
+                const res = await apiFetch('/api/contacts/verify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ contact_ids: ids })
+                });
+                const data = await res.json();
+                if (data.error) throw new Error(data.error);
+                _pollVerifyProgress(data.job_id, ids.length);
+            } catch (e) {
+                const b = document.getElementById('verifyProgressBanner');
+                if (b) b.remove();
+                showToast('❌ ' + e.message);
+            }
+        }
+
+        async function verifySelectedContacts() {
+            const ids = getSelectedContactIds();
+            if (!ids.length) return alert('Select contacts to verify');
+            if (!confirm(`Verify emails for ${ids.length} contacts? Invalid emails will be cleared.`)) return;
+            await _startVerify(ids);
+        }
+
         // =========================================================================
         // SEQUENCES
         // =========================================================================
+        async function verifySelectedSequences() {
+            const ids = [...document.querySelectorAll('.seq-check:checked')].map(cb => cb.value);
+            if (!ids.length) return alert('Select sequences to verify (check the box next to the contact name)');
+            if (!confirm(`Verify emails for ${ids.length} contacts? Invalid emails will be cleared.`)) return;
+            await _startVerify(ids);
+        }
+
         async function loadSequences(area, actions) {
             let url = '/api/sequences';
             if (currentSideTab !== 'all-seq') {
@@ -854,6 +1055,9 @@
                     </button>
                     <button onclick="checkReplies()" id="btnCheckReplies" class="bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white px-4 py-2 rounded-lg text-sm font-medium shadow-lg transition-all">
                         <i data-lucide="mail-check" class="w-4 h-4 inline mr-1"></i> Check Replies
+                    </button>
+                    <button onclick="verifySelectedSequences()" id="btnVerifySelectedSeq" class="bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 px-4 py-2 rounded-lg text-sm font-medium border border-transparent transition-all">
+                        <i data-lucide="shield-check" class="w-4 h-4 inline mr-1"></i> Verify Emails
                     </button>
                     <button id="btnDeleteSelectedSeq" onclick="deleteSelectedSeqs()" class="hidden bg-red-600 hover:bg-red-500 text-white px-4 py-2 rounded-lg text-sm font-medium shadow-lg transition-all">
                         <i data-lucide="trash-2" class="w-4 h-4 inline mr-1"></i> Delete Selected
@@ -1130,13 +1334,26 @@
             }
 
             area.innerHTML = `
+                <div class="mb-6 bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-5">
+                    <div class="flex items-center justify-between mb-3">
+                        <div>
+                            <h3 class="text-sm font-bold text-emerald-400 uppercase tracking-wider">Custom Sequence Instructions</h3>
+                            <p class="text-xs text-gray-400">These instructions override default rules and project description when regenerating.</p>
+                        </div>
+                        <button onclick="saveCustomInstructions()" class="text-emerald-400 hover:text-emerald-300 text-xs font-medium flex items-center gap-1 bg-emerald-500/10 px-2 py-1 rounded">
+                            <i data-lucide="save" class="w-3 h-3"></i> Save Instructions
+                        </button>
+                    </div>
+                    <textarea id="customSequenceInstructions" rows="3" class="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-gray-200 text-sm outline-none focus:border-emerald-500 transition-colors" placeholder="e.g. Focus on Step 1 being about our 24h turnaround time. Use a friendly but professional tone.">${data.custom_instructions || ''}</textarea>
+                </div>
+
                 <div class="mb-4 flex items-center justify-between">
                     <div>
                         <h3 class="text-lg font-semibold text-white">Sequence Builder</h3>
-                        <p class="text-xs text-gray-400">Variables: <code class="text-violet-400 bg-gray-800 px-1 rounded">{{first_name}}</code> <code class="text-violet-400 bg-gray-800 px-1 rounded">{{name}}</code> <code class="text-violet-400 bg-gray-800 px-1 rounded">{{company}}</code> <code class="text-violet-400 bg-gray-800 px-1 rounded">{{location}}</code> <code class="text-violet-400 bg-gray-800 px-1 rounded">{{niche}}</code> <code class="text-violet-400 bg-gray-800 px-1 rounded">{{sender_name}}</code> <code class="text-violet-400 bg-gray-800 px-1 rounded">{{sender_first_name}}</code></p>
+                        <p class="text-xs text-gray-400">Variables: <code class="text-violet-400 bg-gray-800 px-1 rounded">{{first_name}}</code> <code class="text-violet-400 bg-gray-800 px-1 rounded">{{name}}</code> <code class="text-violet-400 bg-gray-800 px-1 rounded">{{company}}</code> <code class="text-violet-400 bg-gray-800 px-1 rounded">{{location}}</code> <code class="text-violet-400 bg-gray-800 px-1 rounded">{{niche}}</code> <code class="text-violet-400 bg-gray-800 px-1 rounded">{{sender_name}}</code></p>
                     </div>
                     <button id="btnRegenAll" onclick="regenerateAllTemplates()" class="flex items-center gap-2 bg-violet-600 hover:bg-violet-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all shadow-lg">
-                        <i data-lucide="refresh-cw" class="w-4 h-4"></i> Regenerate All
+                        <i data-lucide="refresh-cw" class="w-4 h-4"></i> Regenerate All (Uses Instructions)
                     </button>
                 </div>
                 <div class="space-y-4" id="templates-container">
@@ -1198,8 +1415,25 @@
             }
         }
 
+        async function saveCustomInstructions() {
+            const custom = document.getElementById('customSequenceInstructions').value.trim();
+            showToast('Saving instructions...');
+            try {
+                const res = await apiFetch(`/api/projects/${currentProjectId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ custom_instructions: custom })
+                });
+                if (!res.ok) throw new Error(await res.text());
+                showToast('✅ Custom instructions saved');
+            } catch (e) {
+                showToast('❌ Error: ' + e.message);
+            }
+        }
+
         async function regenerateAllTemplates() {
-            if (!confirm('Regenerate ALL 4 templates from scratch using the project description? This will REPLACE all existing templates.')) return;
+            const custom = document.getElementById('customSequenceInstructions').value.trim();
+            if (!confirm('Regenerate ALL 4 templates from scratch using these instructions? This will REPLACE all existing templates.')) return;
             const btn = document.getElementById('btnRegenAll');
             if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4 animate-spin inline mr-1"></i> Regenerating...'; if (window.lucide) window.lucide.createIcons(); }
             showToast('🔁 Regenerating all 4 templates...');
@@ -1207,7 +1441,7 @@
                 const res = await apiFetch('/api/templates/regenerate-all', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({})
+                    body: JSON.stringify({ custom_instructions: custom })
                 });
                 const data = await res.json();
                 if (data.error) throw new Error(data.error);
@@ -1542,34 +1776,9 @@
                 const data = await res.json();
                 if (data.error) throw new Error(data.error);
 
-                // Handle background start
-                if (data.status === 'started') {
-                    showToast('✅ Daily run dispatched in background. Check terminal logs for real-time progress!');
-                    return; 
-                }
-
-                const sent = data.email_send?.sent || 0;
-                const replies = data.reply_check?.replies_found || 0;
-                const duration = data.duration_seconds || 0;
-
-                openModal(`
-                    <div class="p-6 text-center">
-                        <div class="text-4xl mb-4">✅</div>
-                        <h2 class="text-xl font-bold text-white mb-2">Daily Run Complete</h2>
-                        <p class="text-gray-400 mb-4">${Math.round(duration)}s elapsed</p>
-                        <div class="grid grid-cols-2 gap-4 text-center">
-                            <div class="bg-gray-800 rounded-lg p-4">
-                                <div class="text-2xl font-bold text-violet-400">${sent}</div>
-                                <div class="text-xs text-gray-500 mt-1">Emails Sent</div>
-                            </div>
-                            <div class="bg-gray-800 rounded-lg p-4">
-                                <div class="text-2xl font-bold text-amber-400">${replies}</div>
-                                <div class="text-xs text-gray-500 mt-1">Replies Found</div>
-                            </div>
-                        </div>
-                        <button onclick="closeModal(); loadContent(); fetchSmtpCapacity();" class="mt-6 w-full bg-gradient-to-r from-violet-600 to-indigo-600 text-white font-medium py-2 rounded-lg">Done</button>
-                    </div>
-                `);
+                // Start progress polling
+                _pollTaskProgress({ type: 'daily-run', projectId: currentProjectId });
+                showToast('🚀 Daily sequence run started in the background!');
             } catch (e) {
                 showToast('❌ Daily run error: ' + e.message);
             } finally {
@@ -1596,7 +1805,8 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
                         project_id: currentProjectId, 
-                        contact_ids: selectedIds 
+                        contact_ids: selectedIds,
+                        limit: 300
                     })
                 });
                 const data = await res.json();
@@ -1728,8 +1938,9 @@
             const segments = [
                 { label: 'New', count: c.new, color: 'bg-blue-500' },
                 { label: 'Enriched', count: c.enriched, color: 'bg-yellow-500' },
-                { label: 'Icebreaker', count: c.icebreaker_ready, color: 'bg-violet-500' },
+                { label: 'Icebreaker', count: c.icebreaker_ready, color: 'bg-indigo-500' },
                 { label: 'In Seq', count: c.in_sequence, color: 'bg-orange-500' },
+                { label: 'Bounced', count: c.bounced, color: 'bg-red-500' },
                 { label: 'Done', count: c.completed, color: 'bg-emerald-500' }
             ];
             return `
@@ -1744,12 +1955,14 @@
 
         function emailPerfBar(e) {
             const total = e.total || 1;
+            const getPct = (val) => (val || 0) / total * 100;
             return `
                 <div class="space-y-2">
-                    <div class="flex items-center gap-2"><span class="text-xs text-gray-400 w-16">Pending</span><div class="flex-1 bg-gray-800 rounded-full h-3"><div class="bg-gray-500 h-3 rounded-full" style="width:${(e.pending || 0) / total * 100}%"></div></div><span class="text-xs text-gray-500">${e.pending || 0}</span></div>
-                    <div class="flex items-center gap-2"><span class="text-xs text-gray-400 w-16">Sent</span><div class="flex-1 bg-gray-800 rounded-full h-3"><div class="bg-blue-500 h-3 rounded-full" style="width:${(e.sent || 0) / total * 100}%"></div></div><span class="text-xs text-gray-500">${e.sent || 0}</span></div>
-                    <div class="flex items-center gap-2"><span class="text-xs text-gray-400 w-16">Opened</span><div class="flex-1 bg-gray-800 rounded-full h-3"><div class="bg-yellow-500 h-3 rounded-full" style="width:${(e.opened || 0) / total * 100}%"></div></div><span class="text-xs text-gray-500">${e.opened || 0}</span></div>
-                    <div class="flex items-center gap-2"><span class="text-xs text-gray-400 w-16">Replied</span><div class="flex-1 bg-gray-800 rounded-full h-3"><div class="bg-emerald-500 h-3 rounded-full" style="width:${(e.replied || 0) / total * 100}%"></div></div><span class="text-xs text-gray-500">${e.replied || 0}</span></div>
+                    <div class="flex items-center gap-2"><span class="text-xs text-gray-400 w-16">Pending</span><div class="flex-1 bg-gray-800 rounded-full h-3"><div class="bg-gray-500 h-3 rounded-full" style="width:${getPct(e.pending)}%"></div></div><span class="text-xs text-gray-500">${e.pending || 0}</span></div>
+                    <div class="flex items-center gap-2"><span class="text-xs text-gray-400 w-16">Sent</span><div class="flex-1 bg-gray-800 rounded-full h-3"><div class="bg-blue-500 h-3 rounded-full" style="width:${getPct(e.sent)}%"></div></div><span class="text-xs text-gray-500">${e.sent || 0}</span></div>
+                    <div class="flex items-center gap-2"><span class="text-xs text-gray-400 w-16">Opened</span><div class="flex-1 bg-gray-800 rounded-full h-3"><div class="bg-yellow-500 h-3 rounded-full" style="width:${getPct(e.opened)}%"></div></div><span class="text-xs text-gray-500">${e.opened || 0}</span></div>
+                    <div class="flex items-center gap-2"><span class="text-xs text-gray-400 w-16">Replied</span><div class="flex-1 bg-gray-800 rounded-full h-3"><div class="bg-emerald-500 h-3 rounded-full" style="width:${getPct(e.replied)}%"></div></div><span class="text-xs text-gray-500">${e.replied || 0}</span></div>
+                    <div class="flex items-center gap-2"><span class="text-xs text-gray-400 w-16">Bounced</span><div class="flex-1 bg-gray-800 rounded-full h-3"><div class="bg-red-500 h-3 rounded-full" style="width:${getPct(e.bounced)}%"></div></div><span class="text-xs text-gray-500">${e.bounced || 0}</span></div>
                 </div>
             `;
         }
@@ -1794,19 +2007,204 @@
             lucide.createIcons();
         }
 
+        // ── Enrichment Progress Monitor ──────────────────────────────────────────
+        // ── Unified Task Progress Monitor ────────────────────────────────────────
+        async function _pollTaskProgress(options) {
+            const { 
+                type,           // 'enrichment', 'daily-run', 'icebreaker'
+                targetIds,      // for enrichment
+                total,          // total count
+                projectId,
+                intervalMs = 3000 
+            } = options;
+
+            const bannerId = `taskProgressBanner_${type}`;
+            let banner = document.getElementById(bannerId);
+            if (!banner) {
+                banner = document.createElement('div');
+                banner.id = bannerId;
+                // Offset multiple banners if active
+                const activeBanners = document.querySelectorAll('[id^="taskProgressBanner_"]').length;
+                const bottomOffset = 1.5 + (activeBanners * 6);
+                banner.className = `fixed bottom-${Math.round(bottomOffset)} right-6 z-50 bg-gray-900 border border-blue-500 rounded-2xl px-6 py-4 shadow-2xl min-w-[320px] animate-in fade-in slide-in-from-bottom-4 duration-300`;
+                document.body.appendChild(banner);
+            }
+
+            const icons = {
+                enrichment: 'sparkles',
+                'daily-run': 'send',
+                icebreaker: 'zap'
+            };
+            const labels = {
+                enrichment: 'Enriching Contacts...',
+                'daily-run': 'Daily Sequence Run...',
+                icebreaker: 'Generating Icebreakers...'
+            };
+            const icon = icons[type] || 'loader-2';
+            const label = labels[type] || 'Processing...';
+
+            const interval = setInterval(async () => {
+                try {
+                    let completed = 0;
+                    let currentTotal = total;
+
+                    if (type === 'enrichment' && targetIds) {
+                        const { data } = await supabase.from('contacts').select('id, status, email, instagram').in('id', targetIds);
+                        completed = (data || []).filter(c => c.status === 'enriched' || c.email || c.instagram).length;
+                    } else if (type === 'daily-run') {
+                        // For daily run, we check pending vs sent in the last hour/day for this project
+                        const { count: sent } = await supabase.from('email_sequences').select('id', { count: 'exact', head: true })
+                            .eq('project_id', projectId).eq('status', 'sent');
+                        const { count: pending } = await supabase.from('email_sequences').select('id', { count: 'exact', head: true })
+                            .eq('project_id', projectId).eq('status', 'pending');
+                        
+                        // This is a rough estimate: we assume "total" is what we started with
+                        // But since we don't know exactly, we'll just show the count.
+                        completed = sent || 0;
+                        currentTotal = (sent || 0) + (pending || 0);
+                    } else if (type === 'icebreaker') {
+                        const { data } = await supabase.from('contacts').select('id, icebreaker').eq('project_id', projectId);
+                        completed = (data || []).filter(c => c.icebreaker && c.icebreaker.length > 10).length;
+                        currentTotal = data?.length || 0;
+                    }
+
+                    const percent = currentTotal > 0 ? Math.round((completed / currentTotal) * 100) : 0;
+
+                    banner.innerHTML = `
+                        <div class="flex flex-col gap-3">
+                            <div class="flex items-center justify-between">
+                                <span class="text-sm font-semibold text-white flex items-center gap-2">
+                                    <i data-lucide="${icon}" class="w-4 h-4 text-blue-400 animate-pulse"></i>
+                                    ${label}
+                                </span>
+                                <span class="text-xs font-mono text-blue-400">${completed} / ${currentTotal}</span>
+                            </div>
+                            <div class="w-full bg-gray-800 rounded-full h-1.5 overflow-hidden">
+                                <div class="bg-blue-500 h-full transition-all duration-500" style="width: ${percent || 0}%"></div>
+                            </div>
+                            <p class="text-[10px] text-gray-500 italic">Running in background. Refresh for latest list.</p>
+                        </div>
+                    `;
+                    if (window.lucide) lucide.createIcons();
+
+                    // Completion check
+                    if (completed >= currentTotal && currentTotal > 0) {
+                        clearInterval(interval);
+                        banner.innerHTML = `
+                            <div class="flex items-center gap-3 text-emerald-400">
+                                <i data-lucide="check-circle" class="w-5 h-5"></i>
+                                <span class="text-sm font-semibold">${type.replace('-', ' ').toUpperCase()} Complete</span>
+                            </div>
+                        `;
+                        if (window.lucide) lucide.createIcons();
+                        setTimeout(() => banner.remove(), 5000);
+                        loadContent();
+                    }
+                } catch (e) {
+                    console.error('Progress monitor error:', e);
+                    clearInterval(interval);
+                    banner.remove();
+                }
+            }, intervalMs);
+        }
+
+
+        async function runCleanup() {
+            if (!currentProjectId) return alert('Select a project first');
+            if (!confirm('This will clean mashed names, remove junk domains (D7Finder, Glassdoor, etc.), and deduplicate contacts. Proceed?')) return;
+            
+            showToast('🧹 Cleaning names and filtering junk...');
+            try {
+                const res = await apiFetch('/api/contacts/cleanup', {
+                    method: 'POST',
+                    body: JSON.stringify({ project_id: currentProjectId })
+                });
+                const data = await res.json();
+                if (data.error) throw new Error(data.error);
+                
+                showToast(`✅ ${data.message}`);
+                loadContent(); // Reload current view
+            } catch (e) {
+                alert('Cleanup failed: ' + e.message);
+            }
+        }
+
         async function runEnrichment() {
             const selectedIds = getSelectedContactIds();
-            const msg = selectedIds.length > 0
-                ? `Enrich ${selectedIds.length} selected contact(s) with emails and Instagram? This uses Serper API credits.`
-                : 'Enrich up to 50 pending contacts with emails and Instagram? This uses Serper API credits.';
+            let targetIds = selectedIds;
+            
+            // If no selection, we need to know WHICH contacts the backend will pick (limit 500)
+            if (targetIds.length === 0) {
+                const { data } = await supabase
+                    .from('contacts')
+                    .select('id')
+                    .eq('project_id', currentProjectId)
+                    .eq('status', 'new')
+                    .limit(500);
+                targetIds = (data || []).map(c => c.id);
+            }
+
+            if (targetIds.length === 0) {
+                showToast('No new contacts to enrich!');
+                return;
+            }
+
+            const msg = `Enrich ${targetIds.length} contact(s) with emails and Instagram? This uses Serper API credits.`;
             if (!confirm(msg)) return;
-            showToast('Starting enrichment...');
+            
+            showToast('🚀 Enrichment started in background...');
             try {
-                const body = JSON.stringify({ limit: 50, contact_ids: selectedIds });
+                const body = JSON.stringify({ limit: 500, contact_ids: targetIds, project_id: currentProjectId });
                 const res = await apiFetch('/api/contacts/enrich', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
                 const data = await res.json();
-                showToast(`✅ Enriched ${data.processed} contacts: ${data.emails_found} emails, ${data.ig_found} IGs found`);
-                loadContent();
+                
+                if (data.status === 'started') {
+                    _pollTaskProgress({ type: 'enrichment', targetIds, total: targetIds.length });
+                } else if (data.processed !== undefined) {
+                    showToast(`✅ Enriched ${data.processed} contacts`);
+                    loadContent();
+                }
+            } catch (e) { showToast('❌ ' + e.message); }
+        }
+
+        async function runCamoufoxEnrichment() {
+            const selectedIds = getSelectedContactIds();
+            let targetIds = selectedIds;
+
+            // If no selection, target contacts without emails
+            if (targetIds.length === 0) {
+                const { data } = await supabase
+                    .from('contacts')
+                    .select('id')
+                    .eq('project_id', currentProjectId)
+                    .is('email', null)
+                    .limit(200);
+                targetIds = (data || []).map(c => c.id);
+            }
+
+            if (targetIds.length === 0) {
+                showToast('No contacts without emails to enrich!');
+                return;
+            }
+
+            const msg = `🕵️ Stealthy Enrich ${targetIds.length} contact(s) using Camoufox?\n\nScrapes each contact's website directly for emails and Instagram. Slower but bypasses Cloudflare. Falls back to Serper if no website is stored.`;
+            if (!confirm(msg)) return;
+
+            showToast('🕵️ Camoufox stealth enrichment started...');
+            try {
+                const body = JSON.stringify({ contact_ids: targetIds });
+                const res = await apiFetch('/api/contacts/camoufox-enrich', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body
+                });
+                const data = await res.json();
+                if (data.status === 'started') {
+                    showToast(`🕵️ Scraping ${targetIds.length} contacts in background—check back in a few minutes!`);
+                    _pollTaskProgress({ type: 'enrichment', targetIds, total: targetIds.length });
+                } else if (data.error) {
+                    showToast('❌ ' + data.error);
+                }
             } catch (e) { showToast('❌ ' + e.message); }
         }
 
@@ -1827,6 +2225,7 @@
                 });
                 const data = await res.json();
                 showToast(`✅ ${data.message || 'Started background generation'}`);
+                _pollTaskProgress({ type: 'icebreaker', projectId: currentProjectId });
                 loadContent(); // Refresh to show "in progress" state
             } catch (e) { showToast('❌ ' + e.message); }
         }
@@ -2076,12 +2475,155 @@
             switchTopTab('search');
         }
 
+        /** Simple Toast Notification */
+        function showToast(message, duration = 3000) {
+            let toast = document.getElementById('toast-notification');
+            if (!toast) {
+                toast = document.createElement('div');
+                toast.id = 'toast-notification';
+                toast.className = 'fixed bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 bg-gray-800 border border-violet-500/50 text-white text-sm font-medium rounded-full shadow-2xl z-[100] transition-all duration-300 pointer-events-none opacity-0 translate-y-4';
+                document.body.appendChild(toast);
+            }
+            
+            toast.textContent = message;
+            toast.classList.remove('opacity-0', 'translate-y-4');
+            toast.classList.add('opacity-100', 'translate-y-0');
+            
+            setTimeout(() => {
+                toast.classList.remove('opacity-100', 'translate-y-0');
+                toast.classList.add('opacity-0', 'translate-y-4');
+            }, duration);
+        }
+
+        // =========================================================================
+        // SEARCH TAB
+        // =========================================================================
+        async function loadSearch(area, actions) {
+            const isPeopleMode = (window._searchMode || 'people') === 'people';
+
+            area.innerHTML = `
+                <div class="max-w-2xl">
+                    <!-- Mode toggle -->
+                    <div class="flex gap-2 mb-6 bg-gray-900 border border-gray-800 rounded-xl p-1.5 w-fit">
+                        <button id="modePeople"
+                            onclick="window._searchMode='people'; loadContent()"
+                            class="px-4 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 ${isPeopleMode
+                                ? 'bg-violet-600 text-white shadow'
+                                : 'text-gray-400 hover:text-white'}">
+                            👤 People
+                        </button>
+                        <button id="modeBiz"
+                            onclick="window._searchMode='business'; loadContent()"
+                            class="px-4 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 ${!isPeopleMode
+                                ? 'bg-cyan-600 text-white shadow'
+                                : 'text-gray-400 hover:text-white'}">
+                            🏢 Businesses
+                        </button>
+                    </div>
+
+                    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6">
+                        <h2 class="text-base font-semibold text-white mb-1">
+                            ${isPeopleMode ? 'Search Google for People' : 'Search Google for Businesses'}
+                        </h2>
+                        <p class="text-xs text-gray-400 mb-5">
+                            ${isPeopleMode
+                                ? 'Find LinkedIn profiles and contacts. Use <code class="bg-gray-800 px-1 rounded">site:linkedin.com</code> for best results.'
+                                : 'Find business websites to enrich with Camoufox — emails &amp; Instagram scraped directly from their site.'}
+                        </p>
+
+                        <!-- Query rows -->
+                        <div id="queryList" class="space-y-2 mb-4">
+                            <div class="flex gap-2">
+                                <input type="text"
+                                    class="search-query-input flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white text-sm focus:border-violet-500 focus:outline-none"
+                                    placeholder="${isPeopleMode ? 'e.g. programmer film festival site:linkedin.com' : 'e.g. SEO agency Chicago'}">
+                            </div>
+                        </div>
+
+                        <!-- Num results -->
+                        <div class="flex items-center gap-4 mb-5">
+                            <label class="text-xs text-gray-400 whitespace-nowrap">Results per query:</label>
+                            <select id="numResults" class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-violet-500 focus:outline-none">
+                                <option value="10">10 results (Quick)</option>
+                                <option value="50" ${!isPeopleMode ? 'selected' : ''}>50 results</option>
+                                <option value="100" ${isPeopleMode ? 'selected' : ''}>100 results (Standard)</option>
+                                <option value="200">200 results</option>
+                                <option value="500">500 results (Deep)</option>
+                            </select>
+                        </div>
+
+                        <!-- Actions -->
+                        <div class="flex gap-3">
+                            <button onclick="addQueryRow()" class="flex items-center gap-1.5 px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-sm text-white transition-colors">
+                                <i data-lucide="plus" class="w-4 h-4"></i> Add Query
+                            </button>
+                            <button onclick="${isPeopleMode ? 'runPeopleSearch()' : 'runBusinessSearch()'}"
+                                class="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold text-white transition-all duration-200 ${isPeopleMode
+                                    ? 'bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500'
+                                    : 'bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500'}">
+                                <i data-lucide="search" class="w-4 h-4"></i>
+                                ${isPeopleMode ? 'Find People' : 'Find Businesses'}
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- History hint -->
+                    <p class="text-xs text-gray-500 mt-4 text-center">
+                        Contacts appear in the <strong class="text-gray-400">Contacts</strong> tab once the search completes.
+                        ${!isPeopleMode ? 'Then run <strong class="text-cyan-400">🕵️ Stealthy Enrich</strong> to scrape their emails.' : ''}
+                    </p>
+                </div>
+            `;
+            lucide.createIcons();
+        }
+
+        function _getSearchQueries() {
+            return [...document.querySelectorAll('.search-query-input')]
+                .map(i => i.value.trim()).filter(Boolean);
+        }
+
+        async function runPeopleSearch() {
+            const queries = _getSearchQueries();
+            if (!queries.length) { showToast('Add at least one search query'); return; }
+            const num = parseInt(document.getElementById('numResults')?.value || '100');
+            showToast('🔍 Searching for people...');
+            try {
+                const res = await apiFetch('/api/contacts/search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ queries, num_results: num, project_id: currentProjectId })
+                });
+                const data = await res.json();
+                if (data.error) { showToast('❌ ' + data.error); return; }
+                showToast(`✅ Found ${data.inserted} new people (${data.skipped} dupes skipped)`);
+            } catch (e) { showToast('❌ ' + e.message); }
+        }
+
+        async function runBusinessSearch() {
+            const queries = _getSearchQueries();
+            if (!queries.length) { showToast('Add at least one search query'); return; }
+            const num = parseInt(document.getElementById('numResults')?.value || '50');
+            if (!confirm(`Search for businesses matching ${queries.length} quer${queries.length === 1 ? 'y' : 'ies'}? Results will appear in Contacts with websites ready for Camoufox enrichment.`)) return;
+            showToast('🏢 Business search started in background...');
+            try {
+                const res = await apiFetch('/api/contacts/business-search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ queries, num_results: num, project_id: currentProjectId })
+                });
+                const data = await res.json();
+                if (data.error) { showToast('❌ ' + data.error); return; }
+                showToast(`🏢 ${data.message || 'Business search started — contacts appear in a minute'}`);
+            } catch (e) { showToast('❌ ' + e.message); }
+        }
+
         function addQueryRow() {
             const list = document.getElementById('queryList');
             const div = document.createElement('div');
             div.className = 'flex gap-2';
+            const isPeopleMode = (window._searchMode || 'people') === 'people';
             div.innerHTML = `
-                <input type="text" class="search-query-input flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white text-sm focus:border-violet-500 focus:outline-none" placeholder="Search query...">
+                <input type="text" class="search-query-input flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white text-sm focus:border-violet-500 focus:outline-none" placeholder="${isPeopleMode ? 'e.g. film critic site:linkedin.com' : 'e.g. digital agency Atlanta'}">
                 <button onclick="this.closest('.flex').remove()" class="text-gray-400 hover:text-red-400 px-2"><i data-lucide="x" class="w-4 h-4"></i></button>
             `;
             list.appendChild(div);
@@ -2101,6 +2643,64 @@
             toast.textContent = msg;
             document.body.appendChild(toast);
             setTimeout(() => toast.remove(), 5000);
+        }
+        
+        // =========================================================================
+        // INLINE EDITING
+        // =========================================================================
+        function editContactName(element, id) {
+            const displaySpan = document.getElementById(`name-display-${id}`);
+            const editContainer = document.getElementById(`name-edit-container-${id}`);
+            const inputField = document.getElementById(`name-input-${id}`);
+            
+            displaySpan.parentElement.classList.add('hidden');
+            editContainer.classList.remove('hidden');
+            inputField.focus();
+            
+            // Put cursor at the end
+            const val = inputField.value;
+            inputField.value = '';
+            inputField.value = val;
+        }
+
+        function cancelContactName(id) {
+            const displaySpan = document.getElementById(`name-display-${id}`);
+            const editContainer = document.getElementById(`name-edit-container-${id}`);
+            
+            editContainer.classList.add('hidden');
+            displaySpan.parentElement.classList.remove('hidden');
+        }
+
+        async function saveContactName(id) {
+            const displaySpan = document.getElementById(`name-display-${id}`);
+            const editContainer = document.getElementById(`name-edit-container-${id}`);
+            const inputField = document.getElementById(`name-input-${id}`);
+            
+            const newName = inputField.value.trim();
+            const oldName = displaySpan.innerText;
+            
+            // Switch back to view mode immediately for responsiveness
+            displaySpan.innerText = newName || '—';
+            editContainer.classList.add('hidden');
+            displaySpan.parentElement.classList.remove('hidden');
+            
+            if (newName === oldName || (!newName && oldName === '—')) return;
+            
+            try {
+                const res = await fetch(`/api/contacts/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: newName })
+                });
+                
+                if (!res.ok) throw new Error('Failed to update name');
+                showToast('Name updated successfully');
+                
+            } catch (error) {
+                console.error('Error saving name:', error);
+                displaySpan.innerText = oldName; // Revert on failure
+                showToast('Failed to save name');
+            }
         }
 
         // =========================================================================

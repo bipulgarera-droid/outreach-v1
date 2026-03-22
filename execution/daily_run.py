@@ -65,10 +65,11 @@ def daily_run(limit: int = 300, dry_run: bool = False, delay_min: int = 20, dela
         results['reply_check'] = reply_stats
 
         replies_found = reply_stats.get('replies_found', 0)
-        if replies_found > 0:
-            logger.info(f"🛑 Found {replies_found} reply(ies). Sequences auto-stopped.")
+        bounces_found = reply_stats.get('bounces_found', 0)
+        if replies_found > 0 or bounces_found > 0:
+            logger.info(f"🛑 Found {replies_found} reply(ies) and {bounces_found} bounce(s). Sequences auto-stopped.")
         else:
-            logger.info("✅ No new replies detected.")
+            logger.info("✅ No new replies or bounces detected.")
     except Exception as e:
         logger.error(f"❌ Reply check failed: {e}")
         results['reply_check'] = {'error': str(e)}
@@ -104,6 +105,7 @@ def daily_run(limit: int = 300, dry_run: bool = False, delay_min: int = 20, dela
     logger.info("=" * 60)
     logger.info(f"  DAILY RUN COMPLETE — {duration:.0f}s elapsed")
     logger.info(f"  Replies found: {results['reply_check'].get('replies_found', 'N/A')}")
+    logger.info(f"  Bounces found: {results['reply_check'].get('bounces_found', 'N/A')}")
     logger.info(f"  Emails sent: {results['email_send'].get('sent', 'N/A')}")
     logger.info("=" * 60)
 

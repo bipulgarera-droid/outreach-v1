@@ -35,8 +35,11 @@ app = Flask(
     static_folder=str(BASE_DIR / 'public'),
     static_url_path=''
 )
-app.secret_key = os.getenv('FLASK_SECRET_KEY', 'filmreach-dev-key')
+app.secret_key = os.getenv('FLASK_SECRET_KEY', 'quickreach-dev-key')
 CORS(app)
+
+# In-memory job tracker for background verification progress
+_verify_jobs = {}
 
 # Supabase client
 from supabase import create_client, Client
@@ -74,7 +77,7 @@ def dashboard():
 def ping():
     return jsonify({
         'status': 'ok',
-        'app': 'FilmReach',
+        'app': 'QuickReach',
         'supabase': supabase is not None
     })
 
@@ -96,60 +99,24 @@ def create_project():
         data = request.json
         name = data.get('name')
         description = data.get('description', '')
+        custom_instructions = data.get('custom_instructions', '')
         if not name:
             return jsonify({'error': 'Project name required'}), 400
         
         # 1. Create the project
         result = supabase.table('projects').insert({
             'name': name, 
-            'description': description
+            'description': description,
+            'custom_instructions': custom_instructions
         }).execute()
         
         project = result.data[0]
         project_id = project['id']
         
         # 2. Context-Aware Template Generation using Gemini
-        if GEMINI_API_KEY and description:
+        if GEMINI_API_KEY and (description or custom_instructions):
             try:
-                system = f"""You are an elite cold-email copywriter for a project named "{name}".
-                The project is described as: "{description}".
-                
-                Generate a 4-step cold email drip sequence tailored to this exact business description.
-                Create exactly 4 steps.
-                
-                CRITICAL COLD EMAIL RULES:
-                - NEVER include any links, URLs, or attachments in ANY step
-                - The goal of every email is to get a REPLY, not a click
-                - The CTA must ALWAYS be a variation of "Want me to send the full report?" or "Can I share the details?"
-                - Keep emails SHORT (3-5 sentences max for the body)
-                - Professional but direct tone
-                
-                VARIABLES — these are substituted per-contact at send time. Use them as {{{{variable}}}} in your output:
-                - {{{{first_name}}}} — contact's business name, no "Team" (e.g. "Jasmine Spa"). USE THIS in the greeting.
-                - {{{{name}}}} — contact's full display name (e.g. "Jasmine Spa Team"). USE THIS when referencing the business in the body.
-                - {{{{company}}}} — company name. Use sparingly if {{{{name}}}} already used.
-                - {{{{location}}}} — the city/region (e.g. "Dubai"). YOU MUST USE THIS at least once in Step 1.
-                - {{{{niche}}}} — the business niche (e.g. "med spa", "restaurant"). YOU MUST USE THIS at least once in Step 1.
-                - {{{{sender_first_name}}}} — the sender's first name. USE THIS in the sign-off.
-                Do NOT use {{{{icebreaker}}}}.
-                
-                MANDATORY TEMPLATE STRUCTURE FOR STEP 1:
-                - Greeting: "Hi {{{{first_name}}}},"
-                - Line 1: Reference their {{{{niche}}}} business in {{{{location}}}} specifically
-                - Line 2: Mention the specific SEO/technical issues found
-                - Line 3: CTA — ask if they want the full audit report
-                - Sign-off: "Best, {{{{sender_first_name}}}}"
-                
-                Steps 2-3: Short follow-ups re-emphasizing value of the report.
-                Step 4: Polite break-up email.
-                
-                You MUST return the output as a SINGLE VALID JSON ARRAY of exactly 4 objects.
-                Each object MUST have three exact keys: 
-                - "name" (e.g. "Intro", "Follow up 1", "Nudge", "Break up")
-                - "subject_template" (the email subject line)
-                - "body_template" (the email body)
-                
-                Return ONLY the raw JSON array. Do not wrap it in markdown block quotes."""
+                system = _get_regen_prompt(name, description, custom_instructions)
                 
                 client = genai.Client(api_key=GEMINI_API_KEY)
                 response = client.models.generate_content(
@@ -224,6 +191,7 @@ def dashboard_stats():
                 'enriched': status_counts.get('enriched', 0),
                 'icebreaker_ready': status_counts.get('icebreaker_ready', 0),
                 'in_sequence': status_counts.get('in_sequence', 0),
+                'replied': status_counts.get('replied', 0),
                 'completed': status_counts.get('completed', 0),
             },
             'emails': {
@@ -231,8 +199,8 @@ def dashboard_stats():
                 'pending': email_counts.get('pending', 0),
                 'sent': email_counts.get('sent', 0),
                 'opened': email_counts.get('opened', 0),
-                'replied': email_counts.get('replied', 0),
-                'bounced': email_counts.get('bounced', 0),
+                'replied': status_counts.get('replied', 0),  # Use contact-based source of truth
+                'bounced': status_counts.get('bounced', 0), # Use contact-based source of truth
             }
         })
     except Exception as e:
@@ -254,7 +222,7 @@ def daily_snapshot():
         today_str = ist_now.strftime('%Y-%m-%d')
         
         result = supabase.table('email_sequences')\
-            .select('id, contact_id, subject, body, step_number, project_id, scheduled_at, contacts(name, email, enrichment_data), projects(name)')\
+            .select('id, contact_id, subject, body, step_number, project_id, scheduled_at, manual_channel, contacts(name, email, enrichment_data), projects(name)')\
             .eq('status', 'pending')\
             .lte('scheduled_at', date_str)\
             .order('scheduled_at')\
@@ -323,6 +291,7 @@ def daily_snapshot():
                 'contact_email': contact.get('email'),
                 'clean_phone': clean_phone,
                 'clean_ig': clean_ig,
+                'manual_channel': step.get('manual_channel') or '',
             })
         
         total = sum(len(p['steps']) for p in projects.values())
@@ -341,14 +310,12 @@ def list_contacts():
     try:
         project_id = request.args.get('project_id')
         if not project_id: return jsonify({'error': 'project_id required'}), 400
-        project_id = request.args.get('project_id')
-        if not project_id: return jsonify({'error': 'project_id required'}), 400
         status = request.args.get('status')
         search = request.args.get('search', '')
         limit = int(request.args.get('limit', 50))
         offset = int(request.args.get('offset', 0))
         
-        query = supabase.table('contacts').select('*', count='exact').eq('project_id', project_id).eq('project_id', project_id)
+        query = supabase.table('contacts').select('*', count='exact').eq('project_id', project_id)
         
         if status:
             query = query.eq('status', status)
@@ -456,25 +423,289 @@ def trigger_search():
         logger.error(f"Search pipeline error: {e}")
         return jsonify({'error': str(e)}), 500
 
+
+@app.route('/api/contacts/business-search', methods=['POST'])
+def trigger_business_search():
+    """Find businesses via Serper and store with website in enrichment_data (for Camoufox)."""
+    try:
+        data = request.json or {}
+        project_id = data.get('project_id')
+        queries = data.get('queries', [])
+        num_results = data.get('num_results', 50)
+
+        if not queries or not project_id:
+            return jsonify({'error': 'queries and project_id are required'}), 400
+
+        import threading
+        from execution.serper_search import run_search_pipeline
+        from execution.business_search import extract_and_store_businesses
+
+        def _run():
+            logger.info(f"[BizSearch] Starting for {len(queries)} queries, project={project_id}")
+            results = run_search_pipeline(queries, num_results, project_id=project_id)
+            total_stats = {'inserted': 0, 'skipped': 0, 'errors': 0}
+            for query in queries:
+                stats = extract_and_store_businesses(results, source_query=query, project_id=project_id)
+                for k in total_stats:
+                    total_stats[k] += stats.get(k, 0)
+            logger.info(f"[BizSearch] Done — {total_stats}")
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+
+        return jsonify({
+            'status': 'started',
+            'message': f'Business search started for {len(queries)} quer{"y" if len(queries)==1 else "ies"} — contacts will appear shortly'
+        })
+    except Exception as e:
+        logger.error(f"Business search error: {e}")
+        return jsonify({'error': str(e)}), 500
+
 # =============================================================================
 # ROUTES — Enrichment
 # =============================================================================
 
-@app.route('/api/contacts/enrich', methods=['POST'])
-def trigger_enrichment():
-    """Trigger email/IG enrichment for pending (or selected) contacts."""
+@app.route('/api/contacts/cleanup', methods=['POST'])
+def cleanup_contacts_endpoint():
+    """Trigger the contact cleanup script."""
     try:
         data = request.json or {}
-        limit = data.get('limit', 50)
+        project_id = data.get('project_id')
+        if not project_id:
+            return jsonify({'error': 'project_id required'}), 400
+            
+        from execution.cleanup_contacts import cleanup_contacts
+        result = cleanup_contacts(project_id)
+        
+        return jsonify({
+            'success': True,
+            'message': f"Cleanup complete: {result['updated']} updated, {result['deleted']} deleted/merged.",
+            'details': result
+        })
+    except Exception as e:
+        logger.error(f"Cleanup error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/contacts/enrich', methods=['POST'])
+def trigger_enrichment():
+    """Trigger email/IG enrichment for pending (or selected) contacts in background."""
+    try:
+        data = request.json or {}
+        limit = data.get('limit', 500)
         contact_ids = data.get('contact_ids', [])
+        project_id = data.get('project_id')
         
+        import threading
         from execution.enrich_contacts import enrich_contacts
-        stats = enrich_contacts(limit=limit, contact_ids=contact_ids)
         
-        return jsonify(stats)
+        # Run in background thread to avoid Gunicorn timeouts
+        def run_enrichment_task():
+            logger.info(f"Starting background enrichment task (limit={limit}, project={project_id}, ids_received={len(contact_ids)})")
+            enrich_contacts(limit=limit, project_id=project_id, contact_ids=contact_ids)
+            logger.info("Background enrichment task complete.")
+
+        thread = threading.Thread(target=run_enrichment_task)
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'status': 'started',
+            'message': f'Enrichment started in background for {len(contact_ids) if contact_ids else limit} contacts'
+        })
     except Exception as e:
         logger.error(f"Enrichment error: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/contacts/camoufox-enrich', methods=['POST'])
+def trigger_camoufox_enrichment():
+    """Stealth-browser enrichment: scrape website for emails + Instagram via Camoufox."""
+    try:
+        data = request.json or {}
+        contact_ids = data.get('contact_ids', [])
+
+        if not contact_ids:
+            return jsonify({'error': 'No contact_ids provided'}), 400
+
+        import threading, json as _json
+        from execution.camoufox_scraper import scrape_contact_info
+        from execution.verify_email import check_email
+
+        def run_camoufox_batch():
+            logger.info(f"[Camoufox] Starting stealth enrichment for {len(contact_ids)} contacts")
+            _sb = __import__('supabase', fromlist=['create_client']).create_client(SUPABASE_URL, effective_key)
+
+            for contact_id in contact_ids:
+                try:
+                    row = _sb.table('contacts').select('*').eq('id', contact_id).single().execute()
+                    if not row.data:
+                        continue
+                    contact = row.data
+
+                    # Skip if already has a verified email
+                    enrichment = contact.get('enrichment_data') or {}
+                    if isinstance(enrichment, str):
+                        try:
+                            enrichment = _json.loads(enrichment)
+                        except Exception:
+                            enrichment = {}
+
+                    if contact.get('email') and enrichment.get('verification_status') in ('valid', 'risky'):
+                        logger.info(f"[Camoufox] Skipping {contact.get('name')} — already has verified email")
+                        continue
+
+                    result = scrape_contact_info(contact)
+                    found_emails = result.get('emails', [])
+                    found_ig = result.get('instagram')
+                    website = result.get('website')
+
+                    # Verify emails and pick the best
+                    best_email = None
+                    best_status = None
+                    for email in found_emails:
+                        v_status, v_reason = check_email(email)
+                        logger.info(f"  Email {email} → {v_status} ({v_reason})")
+                        enrichment[f'cf_verify_{email}'] = v_status
+                        if v_status in ('valid', 'risky') and not best_email:
+                            best_email = email
+                            best_status = v_status
+                            enrichment['verification_status'] = v_status
+                            enrichment['verification_reason'] = v_reason
+
+                    # Update enrichment fields
+                    if website:
+                        enrichment['website'] = website
+                    if found_ig and not enrichment.get('instagram'):
+                        enrichment['instagram'] = found_ig
+
+                    update_payload = {
+                        'enrichment_data': enrichment,
+                        'updated_at': datetime.utcnow().isoformat(),
+                    }
+
+                    if best_email:
+                        update_payload['email'] = best_email
+                        update_payload['status'] = 'enriched'
+                        logger.info(f"[Camoufox] ✅ {contact.get('name')} → {best_email}")
+                    elif found_ig:
+                        # No email but IG found — still useful
+                        update_payload['instagram'] = found_ig.lstrip('@')
+                        logger.info(f"[Camoufox] Partial: {contact.get('name')} → IG {found_ig}")
+                    else:
+                        logger.warning(f"[Camoufox] ❌ Nothing found for {contact.get('name')}")
+
+                    _sb.table('contacts').update(update_payload).eq('id', contact_id).execute()
+
+                except Exception as contact_err:
+                    logger.error(f"[Camoufox] Error processing {contact_id}: {contact_err}")
+
+            logger.info("[Camoufox] Batch complete.")
+
+        thread = threading.Thread(target=run_camoufox_batch, daemon=True)
+        thread.start()
+
+        return jsonify({
+            'status': 'started',
+            'message': f'Camoufox stealth enrichment started for {len(contact_ids)} contacts'
+        })
+
+    except Exception as e:
+        logger.error(f"Camoufox enrichment trigger error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/contacts/verify', methods=['POST'])
+def trigger_manual_verification():
+    """Manually verify selected contacts and purge invalid ones from sequences."""
+    try:
+        data = request.json or {}
+        contact_ids = data.get('contact_ids', [])
+        if not contact_ids:
+            return jsonify({'error': 'No contact IDs provided'}), 400
+
+        import threading, uuid as _uuid
+        job_id = str(_uuid.uuid4())
+        _verify_jobs[job_id] = {
+            'status': 'processing',
+            'total': len(contact_ids),
+            'done': 0,
+            'skipped': 0,
+            'valid': 0,
+            'error': None
+        }
+
+        def run_verification_in_background():
+            from execution.verify_email import check_email
+            from supabase import create_client as _create_client
+            import json as _json
+
+            _sb = _create_client(SUPABASE_URL, effective_key)
+            job = _verify_jobs[job_id]
+            try:
+                contacts = _sb.table('contacts').select('id, email, enrichment_data').in_('id', contact_ids).execute()
+                if not contacts.data:
+                    job['status'] = 'done'
+                    return
+
+                for c in contacts.data:
+                    email = c.get('email')
+                    if not email:
+                        job['done'] += 1
+                        job['skipped'] += 1
+                        continue
+
+                    enrichment_data = c.get('enrichment_data') or {}
+                    if isinstance(enrichment_data, str):
+                        try: enrichment_data = _json.loads(enrichment_data)
+                        except: enrichment_data = {}
+
+                    logger.info(f"Manual Verification: Checking {email} for contact {c['id']}")
+                    v_status, v_reason = check_email(email)
+
+                    enrichment_data['verification_status'] = v_status
+                    enrichment_data['verification_reason'] = v_reason
+
+                    if v_status == 'invalid':
+                        logger.warning(f"  ❌ Manual Verification failed for {email}. Clearing email only — sequences kept for WA/IG outreach.")
+                        _sb.table('contacts').update({
+                            'email': None,
+                            'status': 'skipped',
+                            'enrichment_data': enrichment_data
+                        }).eq('id', c['id']).execute()
+                        job['skipped'] += 1
+                    else:
+                        logger.info(f"  ✅ Manual Verification passed ({v_status}) for {email}.")
+                        _sb.table('contacts').update({
+                            'enrichment_data': enrichment_data
+                        }).eq('id', c['id']).execute()
+                        job['valid'] += 1
+
+                    job['done'] += 1
+
+                job['status'] = 'done'
+
+            except Exception as e:
+                logger.error(f"Background verification failed: {e}")
+                job['status'] = 'error'
+                job['error'] = str(e)
+
+        thread = threading.Thread(target=run_verification_in_background)
+        thread.start()
+
+        return jsonify({'job_id': job_id, 'total': len(contact_ids), 'status': 'processing'}), 202
+
+    except Exception as e:
+        logger.error(f"Manual verification endpoint error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/verify-jobs/<job_id>', methods=['GET'])
+def get_verify_job(job_id):
+    """Poll endpoint for verification job progress."""
+    job = _verify_jobs.get(job_id)
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+    return jsonify(job)
 
 # =============================================================================
 # ROUTES — Icebreakers
@@ -520,12 +751,22 @@ def trigger_icebreakers():
 
 @app.route('/api/templates')
 def list_templates():
-    """List all email templates."""
+    """List all email templates and project context."""
     try:
         project_id = request.args.get('project_id')
         if not project_id: return jsonify({'error': 'project_id required'}), 400
+        
+        # Templates
         result = supabase.table('email_templates').select('*').eq('project_id', project_id).order('step_number').execute()
-        return jsonify({'templates': result.data or []})
+        
+        # Project metadata
+        proj = supabase.table('projects').select('custom_instructions').eq('id', project_id).single().execute()
+        custom_instructions = proj.data.get('custom_instructions') if proj.data else ""
+        
+        return jsonify({
+            'templates': result.data or [],
+            'custom_instructions': custom_instructions
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -614,42 +855,21 @@ def regenerate_all_templates():
             return jsonify({'error': 'project_id required'}), 400
 
         # Fetch project description
-        proj = supabase.table('projects').select('name,description').eq('id', project_id).single().execute()
+        proj = supabase.table('projects').select('name,description,custom_instructions').eq('id', project_id).single().execute()
         if not proj.data:
             return jsonify({'error': 'Project not found'}), 404
         name = proj.data.get('name', 'Unknown')
         description = proj.data.get('description', '')
-        if not description:
-            return jsonify({'error': 'Project has no description. Edit the project first.'}), 400
+        custom_instructions = data.get('custom_instructions') or proj.data.get('custom_instructions', '')
+        
+        # Save custom_instructions back to project if they were passed in
+        if data.get('custom_instructions'):
+             supabase.table('projects').update({'custom_instructions': custom_instructions}).eq('id', project_id).execute()
 
-        system = f"""You are an elite cold-email copywriter for a project named "{name}".
-        The project is described as: "{description}".
+        if not description and not custom_instructions:
+            return jsonify({'error': 'Project has no description or custom instructions.'}), 400
 
-        Generate a 4-step cold email drip sequence. Create exactly 4 steps.
-
-        COLD EMAIL RULES:
-        - NEVER include links, URLs, or attachments
-        - Goal of every email: get a REPLY, not a click
-        - CTA: always a variation of "Want me to send the full report?" or "Can I share the details?"
-        - SHORT emails: 3-5 sentences max for the body
-        - End EVERY email body with a sign-off line: "Best,\n{{{{sender_name}}}}"
-
-        VARIABLES:
-        - {{{{first_name}}}} — contact's greeting name
-        - {{{{name}}}} — contact's full name
-        - {{{{company}}}} — contact's company
-        - {{{{sender_name}}}} — sender's name (always use this in sign-off)
-        Do NOT use {{{{icebreaker}}}}.
-
-        Step 1: warm generic opener about their business type → findings → CTA
-        Steps 2-3: short follow-ups re-emphasizing value
-        Step 4: polite break-up
-
-        Return ONLY a raw JSON array of exactly 4 objects, each with:
-        - "name" (short label: "Intro", "Follow up 1", "Nudge", "Break up")
-        - "subject_template"
-        - "body_template"
-        No markdown, no extra text."""
+        system = _get_regen_prompt(name, description, custom_instructions)
 
         import json as _json
         client = genai.Client(api_key=GEMINI_API_KEY)
@@ -706,6 +926,49 @@ def reorder_templates():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
+def _get_regen_prompt(name, description, custom_instructions):
+    """Generates the system prompt for template generation/regeneration."""
+    prompt = f"""You are an elite cold-email copywriter for a project named "{name}"."""
+    
+    if description:
+        prompt += f"\nBase Project Description: \"{description}\""
+    
+    if custom_instructions:
+        prompt += f"\n\nCRITICAL OVERRIDING INSTRUCTIONS:\n\"{custom_instructions}\"\n(Strictly follow these instructions over any default rules or project description.)"
+    
+    prompt += """
+Generate a 4-step cold email drip sequence tailored to this business description and instructions.
+Create exactly 4 steps.
+
+CRITICAL COLD EMAIL RULES (UNLESS OVERRIDDEN BY CUSTOM INSTRUCTIONS):
+- NEVER include any links, URLs, or attachments in ANY step
+- The goal of every email is to get a REPLY, not a click
+- The CTA must ALWAYS be a variation of "Want me to send the full report?" or "Can I share the details?"
+- Keep emails SHORT (3-5 sentences max for the body)
+- Professional but direct tone
+
+VARIABLES — these are substituted per-contact at send time. Use them as {{variable}} in your output:
+- {{first_name}} — contact's greeting name (e.g. "Jasmine Spa"). USE THIS in the greeting.
+- {{name}} — contact's full display name (e.g. "Jasmine Spa Team"). USE THIS when referencing the business in the body.
+- {{company}} — company name. Use sparingly if {{name}} already used.
+- {{sender_name}} — the sender's full name (usually for sign-off).
+Do NOT use {{icebreaker}}.
+
+MANDATORY TEMPLATE STRUCTURE:
+- Step 1: Warm opener about their business → value/findings → CTA
+- Steps 2-3: Short follow-ups re-emphasizing value
+- Step 4: Polite break-up email.
+
+You MUST return the output as a SINGLE VALID JSON ARRAY of exactly 4 objects.
+Each object MUST have three exact keys: 
+- "name" (e.g. "Intro", "Follow up 1", "Nudge", "Break up")
+- "subject_template" (the email subject line)
+- "body_template" (the email body)
+
+Return ONLY the raw JSON array. No markdown block quotes, no explanation."""
+    return prompt
+
 # =============================================================================
 # ROUTES — Email Sequences
 # =============================================================================
@@ -721,7 +984,7 @@ def list_sequences():
         contact_id = request.args.get('contact_id')
         status = request.args.get('status')
         
-        query = supabase.table('email_sequences').select('*, contacts(name, email)').eq('project_id', project_id).eq('project_id', project_id)
+        query = supabase.table('email_sequences').select('*, contacts(name, email)').eq('project_id', project_id)
         
         if contact_id:
             query = query.eq('contact_id', contact_id)
@@ -750,6 +1013,46 @@ def update_sequence(sequence_id):
             if contact_id:
                 supabase.table('email_sequences').update({'status': 'cancelled'}).eq('contact_id', contact_id).eq('status', 'pending').execute()
                 supabase.table('contacts').update({'status': 'replied', 'updated_at': datetime.utcnow().isoformat()}).eq('id', contact_id).execute()
+        
+        # If marked as sent, reschedule subsequent steps (mirrors send_emails.py logic)
+        if data.get('status') == 'sent' and result.data:
+            seq = result.data[0]
+            contact_id = seq.get('contact_id')
+            template_id = seq.get('template_id')
+            project_id = seq.get('project_id')
+            now_sent = datetime.utcnow()
+            
+            if contact_id and template_id and project_id:
+                try:
+                    from datetime import timedelta
+                    # Get delay_days for the just-sent step's template
+                    sent_tmpl = supabase.table('email_templates').select('delay_days').eq('id', template_id).single().execute()
+                    sent_delay = sent_tmpl.data.get('delay_days', 0) if sent_tmpl.data else 0
+                    
+                    # Get all remaining pending steps
+                    pending_res = supabase.table('email_sequences') \
+                        .select('id, template_id, step_number') \
+                        .eq('contact_id', contact_id) \
+                        .eq('status', 'pending') \
+                        .eq('project_id', project_id) \
+                        .execute()
+                        
+                    if pending_res.data:
+                        t_ids = [s['template_id'] for s in pending_res.data if s.get('template_id')]
+                        tmpls = supabase.table('email_templates').select('id, delay_days').in_('id', t_ids).execute()
+                        delay_map = {t['id']: t['delay_days'] for t in (tmpls.data or [])}
+                        
+                        for p_step in pending_res.data:
+                            tid = p_step.get('template_id')
+                            if not tid or tid not in delay_map: continue
+                            delta = delay_map[tid] - sent_delay
+                            if delta > 0:
+                                new_sched = now_sent + timedelta(days=delta)
+                                supabase.table('email_sequences').update({
+                                    'scheduled_at': new_sched.isoformat()
+                                }).eq('id', p_step['id']).execute()
+                except Exception as e:
+                    print(f"Manual reschedule failed: {e}")
         
         return jsonify({'sequence': result.data[0] if result.data else None})
     except Exception as e:
@@ -870,16 +1173,78 @@ def create_sequences():
             import json as _json
 
             def _clean_biz_name(name):
-                if not name: return name
-                name = _re.sub(r'\s*[-\u2013]?\s*(Team|Business|Staff|Group|Page|Hub|Official)\s*$', '', name, flags=_re.IGNORECASE).strip()
-                name = _re.sub(r'\s*(LLC|Inc\.?|Corp\.?|Ltd\.?|LLP|Co\.?|P\.?C\.?|PLLC|Limited|Holdings|International|Services|Solutions|Enterprises|Associates|Consulting|Organization|Foundation)\s*$', '', name, flags=_re.IGNORECASE).strip()
-                return name.strip(' -|,').strip() or name
+                if not name: return ""
+                name = name.strip()
+                
+                # 1. CamelCase split
+                name = _re.sub(r'([a-z])([A-Z])', r'\1 \2', name)
+                
+                # 2. Multi-Pass Industry Split
+                # We'll run multiple passes to catch things like RedChilliesVfx
+                keywords = [
+                    'entertainment', 'motionpictures', 'productions', 'production', 
+                    'studios', 'studio', 'films', 'film', 'media', 'works', 'creative', 
+                    'solutions', 'digital', 'global', 'agency', 'group', 'services', 
+                    'official', 'vfx', 'corp', 'company', 'pictures', 'house', 'collective',
+                    'mantra', 'wadi', 'power', 'hour', 'baba', 'chillies',
+                    'stories', 'maverick', 'jugaad', 'zoom', 'cine', 'power', 'hour', 'that', 'matter'
+                ]
+                prefixes = ['the', 'wild', 'magic', 'stories', 'red', 'zoom', 'cine', 'jugaad', 'maverick', 'goodfellas', 'magic', 'star', 'grand', 'royal']
+                
+                for _ in range(3): # Up to 3 splits per word
+                    new_name = name
+                    words = new_name.split()
+                    cleaned_words = []
+                    for word in words:
+                        if len(word) > 3:
+                            # Try prefix split
+                            for p in prefixes:
+                                if word.lower().startswith(p) and len(word) > len(p) + 2:
+                                    word = word[:len(p)] + ' ' + word[len(p):]
+                                    break
+                            
+                            # Try suffix/keyword split
+                            for k in keywords:
+                                low = word.lower()
+                                if k in low:
+                                    idx = low.find(k)
+                                    if idx > 0 and word[idx-1] != ' ':
+                                        word = word[:idx] + ' ' + word[idx:]
+                                        break
+                                        
+                        cleaned_words.append(word)
+                    name = ' '.join(cleaned_words)
+                    if name == new_name: break # No more changes
+
+                # 3. Final cleanup and casing
+                name = _re.sub(r'\.(com|net|org|in|biz|ai|co\.in|io)$', '', name, flags=_re.IGNORECASE)
+                junk = ['ltd', 'pvt', 'limited', 'private', 'inc', 'corp', 'corporation', 'llp', 'llc']
+                for j in junk:
+                    name = _re.sub(rf'\b{j}\b\.?', '', name, flags=_re.IGNORECASE)
+                    
+                parts = []
+                for p in _re.split(r'[-\s_]', name):
+                    if p:
+                        if p.lower() == 'vfx': parts.append('VFX')
+                        elif p.lower() == 'edu': parts.append('Edu')
+                        else: parts.append(p.capitalize())
+                
+                return ' '.join(parts).strip(' -|–—.,;:"\' ')
 
             def _shorten_company(name):
                 name = _clean_biz_name(name)
                 if not name: return name
                 words = name.split()
                 return ' '.join(words[:3]) if len(words) > 4 else name
+
+            def _is_personal_email(email, full_name):
+                if not email or not full_name: return False
+                local = email.split('@')[0].lower()
+                # Split name by spaces/punctuation and only look at parts >= 3 chars
+                name_parts = [p.lower() for p in _re.split(r'[\s._-]', full_name) if len(p) >= 3]
+                if not name_parts: return False
+                # If any significant name part matches the email prefix, it's likely personalized
+                return any(part in local for part in name_parts)
 
             created_total = 0
             errors_total = 0
@@ -899,11 +1264,49 @@ def create_sequences():
                         try: enrichment_data = _json.loads(enrichment_data)
                         except Exception: enrichment_data = {}
 
-                    raw_company = enrichment_data.get('company') or enrichment_data.get('linkedin_company') or contact.get('name', 'your company')
+                    contact_email = (contact.get('email') or '').strip().rstrip('.,;:)!% ]').strip()
+                    if contact_email and enrichment_data.get('verification_status') != 'valid':
+                        logger.info(f"Contact {contact['id']} has unverified/risky email '{contact_email}'. Verifying now...")
+                        from execution.verify_email import check_email
+                        v_status, v_reason = check_email(contact_email)
+                        
+                        enrichment_data['verification_status'] = v_status
+                        enrichment_data['verification_reason'] = v_reason
+                        
+                        if v_status == 'invalid':
+                            logger.warning(f"Verification failed (INVALID) for imported contact {contact['id']}. Clearing email to prevent hard bounces.")
+                            # Only clear email; keep sequence rows so WA/IG steps still run
+                            _sb.table('contacts').update({
+                                'email': None,
+                                'status': 'skipped',
+                                'enrichment_data': enrichment_data,
+                                'updated_at': datetime.utcnow().isoformat()
+                            }).eq('id', contact['id']).execute()
+                            return created, errors
+                        else:
+                            logger.info(f"Verification passed or risky ({v_status}) for imported contact {contact['id']}.")
+                            # Update DB so we don't verify again next time
+                            _sb.table('contacts').update({
+                                'enrichment_data': enrichment_data
+                            }).eq('id', contact['id']).execute()
+                    # --------------------------------------------------------
+
+                    raw_company = contact.get('company') or enrichment_data.get('company') or enrichment_data.get('linkedin_company') or contact.get('name') or 'your company'
                     full_name = contact.get('name', 'there')
+                    contact_email = (contact.get('email') or '').strip().rstrip('.,;:)!% ]').strip()
+                    
+                    is_personal = _is_personal_email(contact_email, full_name)
                     clean_biz = _clean_biz_name(full_name)
-                    first_name = clean_biz if clean_biz else full_name
-                    display_name = (clean_biz + ' Team') if clean_biz else full_name
+                    
+                    if is_personal:
+                        # Email is personal (e.g. bartosz@...), safe to use name
+                        first_name = full_name.split()[0]
+                        display_name = full_name
+                    else:
+                        # Email is generic (e.g. info@...), suppress personal name
+                        first_name = "there"
+                        # If clean_biz is same as full_name, it's likely a person's name without biz suffix
+                        display_name = (clean_biz + " Team") if clean_biz != full_name else "Team"
 
                     raw_icebreaker = contact.get('icebreaker', '') or ''
                     clean_icebreaker = _re.sub(r'\[\d+\]', '', raw_icebreaker).strip()
@@ -928,36 +1331,68 @@ def create_sequences():
                     bodies_raw = [t['body_template'] for t in templates_data]
                     bodies_para = paraphrase_texts_batch(bodies_raw, context=variables)
 
+                    # ── SMART REFRESH / DEDUP CHECK ──
+                    # Instead of a simple "already exists = skip", we're smarter:
+                    # 1. If step is 'pending': Update content (subject/body) but KEEP existing schedule.
+                    # 2. If step is 'sent' or 'replied': Leave it alone.
+                    # 3. If contact is already 'replied': Skip generating any NEW steps.
+                    
+                    contact_status = contact.get('status', 'new')
+
                     for i, template in enumerate(templates_data):
                         try:
-                            # Dedup check
-                            existing = _sb.table('email_sequences').select('id') \
-                                .eq('contact_id', contact['id']).eq('template_id', template['id']).execute()
-                            if existing.data:
-                                logger.info(f"Skipping duplicate: contact {contact['id']} template {template['id']}")
-                                continue
+                            # Search for an existing sequence row for this specific step number
+                            existing_res = _sb.table('email_sequences').select('*') \
+                                .eq('contact_id', contact['id']) \
+                                .eq('step_number', template['step_number']) \
+                                .execute()
+                            existing = existing_res.data[0] if existing_res.data else None
 
                             subject = template['subject_template']
                             body = bodies_para[i]  # already paraphrased, index-safe
 
                             for key, val in variables.items():
                                 val_str = str(val) if val is not None else ''
-                                subject = subject.replace(f'{{{{{key}}}}}', val_str)
-                                body = body.replace(f'{{{{{key}}}}}', val_str)
+                                # Robust replacement: handle {{tag}}, {{ tag }}, {{Tag}}, etc.
+                                pattern = _re.compile(r'\{\{\s*' + _re.escape(key) + r'\s*\}\}', _re.IGNORECASE)
+                                subject = pattern.sub(val_str, subject)
+                                body = pattern.sub(val_str, body)
 
-                            scheduled = base_date + timedelta(days=template.get('delay_days', 0))
+                            if existing:
+                                if existing['status'] == 'pending':
+                                    # SMART UPDATE: Refresh content but preserve the original date
+                                    logger.info(f"  🔄 Updating pending Step {template['step_number']} for contact {contact['id']}")
+                                    _sb.table('email_sequences').update({
+                                        'template_id': template['id'],
+                                        'subject': subject,
+                                        'body': body,
+                                        'project_id': proj_id
+                                    }).eq('id', existing['id']).execute()
+                                    created += 1
+                                else:
+                                    # PROTECTED: Already sent, replied, or cancelled. Skip.
+                                    logger.info(f"  🛡️ Preserving {existing['status']} Step {template['step_number']} for contact {contact['id']}")
+                                    continue
+                            else:
+                                # BRAND NEW STEP
+                                if contact_status == 'replied':
+                                    logger.info(f"  🔕 Skipping new Step {template['step_number']} — contact already replied.")
+                                    continue
 
-                            _sb.table('email_sequences').insert({
-                                'project_id': proj_id,
-                                'contact_id': contact['id'],
-                                'template_id': template['id'],
-                                'step_number': template['step_number'],
-                                'subject': subject,
-                                'body': body,
-                                'status': 'pending',
-                                'scheduled_at': scheduled.isoformat()
-                            }).execute()
-                            created += 1
+                                scheduled = base_date + timedelta(days=template.get('delay_days', 0))
+                                logger.info(f"  ✨ Creating new Step {template['step_number']} for contact {contact['id']}")
+                                _sb.table('email_sequences').insert({
+                                    'project_id': proj_id,
+                                    'contact_id': contact['id'],
+                                    'template_id': template['id'],
+                                    'step_number': template['step_number'],
+                                    'subject': subject,
+                                    'body': body,
+                                    'status': 'pending',
+                                    'scheduled_at': scheduled.isoformat(),
+                                    'created_at': datetime.utcnow().isoformat()
+                                }).execute()
+                                created += 1
                         except Exception as step_e:
                             logger.error(f"Step {template.get('step_number')} for {contact.get('name')}: {step_e}")
                             errors += 1
@@ -1048,7 +1483,7 @@ def send_test_sequence():
             
         results = []
         for to_email in test_emails:
-            to_email = to_email.strip()
+            to_email = to_email.strip().rstrip('.,;:)!% ]').strip()
             if not to_email: continue
             
             account = pool.get_next_account()
@@ -1072,7 +1507,7 @@ def trigger_send():
     """Send pending scheduled emails."""
     try:
         data = request.json or {}
-        limit = data.get('limit', 50)
+        limit = data.get('limit', 300)
         dry_run = data.get('dry_run', False)
         project_id = data.get('project_id')
         contact_ids = data.get('contact_ids') # For "Send Selected"
@@ -1137,41 +1572,20 @@ def trigger_daily_run():
 
 @app.route('/api/smtp-capacity', methods=['GET'])
 def get_smtp_capacity():
-    """Get today's total SMTP capacity and usage."""
+    """Get today's total SMTP capacity and usage (Rolling 24h)."""
     try:
-        from execution.smtp_pool import SMTPPool, get_today_str
-        
-        # We need to know how many accounts we loaded to calculate max
+        from execution.smtp_pool import SMTPPool
         try:
-            from execution.smtp_pool import SMTPPool, MAX_PER_DAY
             pool = SMTPPool()
-            account_count = len(pool.accounts)
-            
-            # 5 accounts * 60 = 300
-            max_capacity = account_count * MAX_PER_DAY if account_count > 0 else 0
+            used = pool.get_total_usage()
+            limit = pool.get_total_limit()
+            return jsonify({'used': used, 'limit': limit})
         except Exception as e:
-            # If pool fails to load (e.g. no env vars)
             logger.warning(f"Error loading SMTPPool for capacity check: {e}")
             return jsonify({'used': 0, 'limit': 0})
-
-        today = get_today_str()
-        res = supabase.table('smtp_daily_stats').select('sent_count').eq('date', today).execute()
-        
-        used_capacity = sum(row.get('sent_count', 0) for row in (res.data or []))
-        
-        return jsonify({
-            'used': used_capacity,
-            'limit': max_capacity
-        })
     except Exception as e:
         logger.error(f"Error fetching smtp capacity: {e}")
         return jsonify({'error': str(e)}), 500
-
-
-# =============================================================================
-# ROUTES — Search Runs
-# =============================================================================
-
 @app.route('/api/search-runs')
 def list_search_runs():
     """List search run history."""
@@ -1242,12 +1656,30 @@ def import_leads():
         if not project_check.data:
             return jsonify({'error': f'Project {project_id} not found'}), 404
         
-        # Fetch existing emails in this project for deduplication
-        existing = supabase.table('contacts').select('email').eq('project_id', project_id).execute()
+        # Fetch existing contacts in this project for comprehensive deduplication
+        existing = supabase.table('contacts').select('name, email, linkedin_url, enrichment_data').eq('project_id', project_id).execute()
         existing_emails = set()
+        existing_names = set()
+        existing_linkedins = set()
+        existing_websites = set()
+        
         for row in (existing.data or []):
-            if row.get('email'):
+            if row.get('email'): 
                 existing_emails.add(row['email'].lower())
+            if row.get('name'): 
+                existing_names.add(row['name'].lower().strip())
+            if row.get('linkedin_url'): 
+                existing_linkedins.add(row['linkedin_url'].lower().rstrip('/'))
+            
+            # Check website in enrichment_data
+            ed = row.get('enrichment_data')
+            if ed:
+                if isinstance(ed, str):
+                    try: ed = json.loads(ed)
+                    except: ed = {}
+                w = ed.get('website')
+                if w:
+                    existing_websites.add(w.lower().rstrip('/'))
         
         imported = 0
         skipped_duplicate = 0
@@ -1256,33 +1688,38 @@ def import_leads():
         
         contacts_to_insert = []
         
-        # Also fetch existing names for dedup when no email
-        existing_names_q = supabase.table('contacts').select('name').eq('project_id', project_id).execute()
-        existing_names = set()
-        for row in (existing_names_q.data or []):
-            if row.get('name'):
-                existing_names.add(row['name'].lower().strip())
-        
         for lead in leads:
-            email = (lead.get('email') or '').strip()
+            email = (lead.get('email') or '').strip().rstrip('.,;:)!% ]').strip()
             name = (lead.get('name') or '').strip()
+            linkedin = (lead.get('linkedin') or '').strip().lower().rstrip('/')
+            website = (lead.get('website') or '').strip().lower().rstrip('/')
             
-            # Skip if no email AND no phone AND no instagram — truly no way to reach them
-            if not email and not lead.get('phone') and not lead.get('instagram'):
+            # Skip if no email AND no phone AND no instagram AND no linkedin — truly no way to reach them
+            if not email and not lead.get('phone') and not lead.get('instagram') and not linkedin:
                 skipped_no_contact += 1
                 continue
             
-            # Deduplicate: by email if available, otherwise by name
+            # Deduplicate: by email, linkedin, website, or name
+            is_dupe = False
             if email and email.lower() in existing_emails:
+                is_dupe = True
+            elif linkedin and linkedin in existing_linkedins:
+                is_dupe = True
+            elif website and website in existing_websites:
+                is_dupe = True
+            elif not email and not linkedin and name and name.lower().strip() in existing_names:
+                # Name dedup is a fallback, we only use it if no stronger identifiers are present
+                is_dupe = True
+                
+            if is_dupe:
                 skipped_duplicate += 1
                 continue
-            if email:
-                existing_emails.add(email.lower())
-            elif name and name.lower() in existing_names:
-                skipped_duplicate += 1
-                continue
-            if name:
-                existing_names.add(name.lower())
+
+            # Add to sets for internal batch dedup
+            if email: existing_emails.add(email.lower())
+            if linkedin: existing_linkedins.add(linkedin)
+            if website: existing_websites.add(website)
+            if name: existing_names.add(name.lower().strip())
             
             # Build enrichment_data JSON with all the extra GrowthScout data
             enrichment = lead.get('enrichment_data', {})

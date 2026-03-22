@@ -50,6 +50,16 @@ def send_pending_emails(limit: int = 300, dry_run: bool = False, project_id: str
     
     supabase = create_client(supabase_url, supabase_key)
     
+    # ── AUTO-CHECK REPLIES/BOUNCES ──────────────────────────────────
+    # Ensure statuses are fresh before we start sending
+    try:
+        from execution.check_replies import check_all_replies
+        logger.info("Checking for replies and bounces before sending...")
+        check_all_replies(days=7)
+    except Exception as e:
+        logger.warning(f"Pre-send reply check failed (skipping): {e}")
+    # ────────────────────────────────────────────────────────────────
+
     # Init SMTP Pool
     try:
         pool = SMTPPool()
@@ -60,13 +70,12 @@ def send_pending_emails(limit: int = 300, dry_run: bool = False, project_id: str
     # Fetch pending sequences due for sending
     now = datetime.utcnow().isoformat()
     query = supabase.table('email_sequences') \
-        .select('*, contacts(name, email)') \
-        .eq('status', 'pending')
-        
+        .select('*, contacts(name, email, enrichment_data)') \
+        .eq('status', 'pending') \
+        .lte('scheduled_at', now)   # ALWAYS filter by date — never send future steps
+
     if contact_ids:
         query = query.in_('contact_id', contact_ids)
-    else:
-        query = query.lte('scheduled_at', now)
         
     if project_id:
         query = query.eq('project_id', project_id)
@@ -81,10 +90,24 @@ def send_pending_emails(limit: int = 300, dry_run: bool = False, project_id: str
     for seq in sequences:
         try:
             contact = seq.get('contacts', {})
-            to_email = contact.get('email')
+            to_email = (contact.get('email') or '').strip().rstrip('.,;:)!% ]').strip()
             
             if not to_email:
                 logger.warning(f"No email for contact, skipping sequence {seq['id']}")
+                stats['skipped'] += 1
+                continue
+            
+            # BOUNCE PROTECTION: Only send to 'valid' emails
+            ed = contact.get('enrichment_data') or {}
+            if isinstance(ed, str):
+                try: ed = json.loads(ed)
+                except: ed = {}
+            
+            v_status = ed.get('verification_status')
+            if v_status == 'invalid':
+                logger.warning(f"BOUNCE PROTECTION: Skipping {to_email} (Status: INVALID). Marking as skipped.")
+                if not dry_run:
+                    supabase.table('email_sequences').update({'status': 'skipped'}).eq('id', seq['id']).execute()
                 stats['skipped'] += 1
                 continue
             
@@ -117,12 +140,63 @@ def send_pending_emails(limit: int = 300, dry_run: bool = False, project_id: str
             
             if res.get('success'):
                 if not dry_run:
+                    # ── ATOMIC DUPLICATE GUARD ──────────────────────────────
+                    # Re-check the status right before marking as sent to prevent
+                    # double sends if daily_send is clicked twice concurrently.
+                    recheck = supabase.table('email_sequences') \
+                        .select('status') \
+                        .eq('id', seq['id']) \
+                        .single() \
+                        .execute()
+                    if not recheck.data or recheck.data.get('status') != 'pending':
+                        logger.warning(f"  Skipping update — seq {seq['id']} is no longer pending (was it sent already?). Status: {recheck.data.get('status') if recheck.data else 'missing'}")
+                        stats['skipped'] += 1
+                        stats['processed'] += 1
+                        continue
+                    # ────────────────────────────────────────────────────────
+                    now_sent = datetime.utcnow()
                     supabase.table('email_sequences').update({
                         'status': 'sent',
-                        'sent_at': datetime.utcnow().isoformat()
+                        'sent_at': now_sent.isoformat()
                     }).eq('id', seq['id']).execute()
                     
-                    # Store sent_from in contact enrichment data optionally, but seq table doesn't have it standard.
+                    # -------------------------------------------------------
+                    # RESCHEDULE: Update subsequent pending steps relative to
+                    # when this step was actually sent, not sequence creation.
+                    # -------------------------------------------------------
+                    try:
+                        from datetime import timedelta
+                        # Get delay_days for the just-sent step's template
+                        sent_template_res = supabase.table('email_templates').select('delay_days').eq('id', seq.get('template_id')).single().execute()
+                        sent_delay = sent_template_res.data.get('delay_days', 0) if sent_template_res.data else 0
+                        
+                        # Get all remaining pending steps for this contact, joined with template delays
+                        pending_res = supabase.table('email_sequences') \
+                            .select('id, template_id, step_number') \
+                            .eq('contact_id', seq['contact_id']) \
+                            .eq('status', 'pending') \
+                            .eq('project_id', seq['project_id']) \
+                            .execute()
+                        
+                        if pending_res.data:
+                            template_ids = [s['template_id'] for s in pending_res.data if s.get('template_id')]
+                            templates_res = supabase.table('email_templates').select('id, delay_days').in_('id', template_ids).execute()
+                            delay_map = {t['id']: t['delay_days'] for t in (templates_res.data or [])}
+                            
+                            for pending_step in pending_res.data:
+                                tmpl_id = pending_step.get('template_id')
+                                if not tmpl_id or tmpl_id not in delay_map:
+                                    continue
+                                step_delay = delay_map[tmpl_id]
+                                delta = step_delay - sent_delay
+                                if delta > 0:
+                                    new_scheduled = now_sent + timedelta(days=delta)
+                                    supabase.table('email_sequences').update({
+                                        'scheduled_at': new_scheduled.isoformat()
+                                    }).eq('id', pending_step['id']).execute()
+                                    logger.info(f"  -> Rescheduled step {pending_step['step_number']} to {new_scheduled.date()} (+{delta}d from now)")
+                    except Exception as reschedule_err:
+                        logger.warning(f"Reschedule failed (non-critical): {reschedule_err}")
                     
                 stats['sent'] += 1
             else:
@@ -133,13 +207,9 @@ def send_pending_emails(limit: int = 300, dry_run: bool = False, project_id: str
                 stats['errors'] += 1
             
             stats['processed'] += 1
-            
-            # Random delay if not dry run and we have more to send
-            if not dry_run and stats['processed'] < len(sequences):
-                wait_time = random.uniform(DELAY_MIN, DELAY_MAX)
-                logger.info(f"Waiting {wait_time:.1f}s before next email to avoid spam filters...")
-                time.sleep(wait_time)
-            
+            # No per-thread delay here — SMTPPool._send_lock enforces global cadence
+            # across all concurrent project threads.
+
         except Exception as e:
             logger.error(f"Error processing sequence {seq.get('id', '?')}: {e}")
             stats['errors'] += 1
