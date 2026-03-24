@@ -157,6 +157,12 @@
         @media (max-width: 768px) {
             html { font-size: 12px; }
 
+            /* Fix iOS Safari viewport height — use dvh so bottom isn't clipped */
+            body {
+                height: 100dvh !important;
+                height: -webkit-fill-available !important;
+            }
+
             /* Show hamburger */
             .mobile-hamburger {
                 display: flex;
@@ -189,10 +195,20 @@
                 transform: translateX(0);
             }
 
-            /* Sub-header bar */
+            /* Sub-header bar: AUTO HEIGHT so action buttons are never clipped */
             .h-12.bg-gray-900\/50 {
-                padding-left: 12px;
-                padding-right: 12px;
+                height: auto !important;
+                min-height: 3rem;
+                padding: 8px 12px !important;
+                flex-wrap: wrap;
+                gap: 6px;
+                overflow: visible !important;
+            }
+
+            /* Page actions container: allow wrapping + visible overflow */
+            #pageActions {
+                overflow: visible !important;
+                width: 100%;
             }
 
             /* Content area: less padding */
@@ -229,10 +245,10 @@
                 min-width: 700px;
             }
 
-            /* Action button rows: wrap */
+            /* Action button rows: wrap with proper spacing */
             #pageActions .flex.items-center.gap-2 {
                 flex-wrap: wrap;
-                gap: 6px;
+                gap: 8px;
             }
             #pageActions .flex.items-center.gap-2 input[type="text"] {
                 width: 100% !important;
@@ -256,11 +272,11 @@
                 gap: 6px;
             }
 
-            /* Sequence action buttons: wrap */
+            /* Action buttons: slightly bigger tap targets + spacing */
             #pageActions .flex.items-center.gap-2 button,
             #pageActions .flex.items-center.gap-2 a {
                 font-size: 11px;
-                padding: 4px 8px;
+                padding: 6px 10px;
             }
 
             /* Pipeline chevrons: hide on mobile */
