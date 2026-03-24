@@ -93,6 +93,40 @@ def list_projects():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/projects/with-stats', methods=['GET'])
+def list_projects_with_stats():
+    """List all projects with lead counts."""
+    try:
+        projects = supabase.table('projects').select('*').order('created_at', desc=True).execute()
+        result = []
+        for p in (projects.data or []):
+            count_res = supabase.table('contacts').select('id', count='exact').eq('project_id', p['id']).execute()
+            result.append({
+                'id': p['id'],
+                'name': p.get('name', ''),
+                'created_at': p.get('created_at', ''),
+                'lead_count': count_res.count if count_res.count is not None else 0
+            })
+        return jsonify({'projects': result})
+    except Exception as e:
+        logger.error(f"Projects with stats error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/projects/<project_id>', methods=['DELETE'])
+def delete_project(project_id):
+    """Delete a project and all its associated contacts and sequences."""
+    try:
+        # Delete sequences for contacts in this project
+        supabase.table('email_sequences').delete().eq('project_id', project_id).execute()
+        # Delete contacts
+        supabase.table('contacts').delete().eq('project_id', project_id).execute()
+        # Delete the project itself
+        supabase.table('projects').delete().eq('id', project_id).execute()
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"Delete project error: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/projects', methods=['POST'])
 def create_project():
     try:
