@@ -746,7 +746,7 @@
                 else if (currentTopTab === 'pipeline') await loadPipeline(area);
                 else if (currentTopTab === 'search') await loadSearch(area, actions);
                 else if (currentTopTab === 'templates') await loadTemplates(area);
-                else if (currentTopTab === 'projects') await loadProjects(area);
+                else if (currentTopTab === 'projects') await loadProjectsTab(area);
                 else if (currentTopTab === 'settings') loadSettings(area);
             } catch (e) {
                 area.innerHTML = `<div class="text-red-400 p-4">Error: ${e.message}</div>`;
@@ -2015,7 +2015,7 @@
         // =========================================================================
         // PROJECTS
         // =========================================================================
-        async function loadProjects(area) {
+        async function loadProjectsTab(area) {
             const res = await apiFetch('/api/projects/with-stats');
             const data = await res.json();
             const projects = data.projects || [];
@@ -2072,7 +2072,7 @@
                 if (row) { row.style.opacity = '0'; setTimeout(() => row.remove(), 300); }
 
                 // Refresh project dropdown
-                await loadProjects(document.getElementById('contentArea'));
+                await loadProjectsTab(document.getElementById('contentArea'));
                 const projRes = await apiFetch('/api/projects');
                 const projData = await projRes.json();
                 populateProjectDropdown(projData.projects || []);
