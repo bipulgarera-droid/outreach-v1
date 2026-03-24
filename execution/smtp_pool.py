@@ -51,9 +51,10 @@ def _load_accounts_from_env() -> list[dict]:
     for i in range(1, 20):
         email = os.getenv(f"GMAIL_{i}_EMAIL")
         refresh_token = os.getenv(f"GMAIL_{i}_REFRESH_TOKEN")
+        group = os.getenv(f"GMAIL_{i}_GROUP", "all")
         if not email or not refresh_token:
             continue
-        accounts.append({"email": email.strip(), "refresh_token": refresh_token.strip()})
+        accounts.append({"email": email.strip(), "refresh_token": refresh_token.strip(), "group": group.strip()})
     return accounts
 
 
@@ -61,9 +62,10 @@ class GmailAccount:
     """Represents a single Gmail account with send tracking."""
     max_per_day = MAX_PER_DAY
     
-    def __init__(self, email: str, refresh_token: str):
+    def __init__(self, email: str, refresh_token: str, group: str = "all"):
         self.email = email
         self.refresh_token = refresh_token
+        self.group = group
         self.disabled = False
         self._sends_today_cache = 0
         self._sends_hour_cache = 0
@@ -191,7 +193,7 @@ class SMTPPool:
         if not accounts_data:
             raise ValueError("No Gmail API accounts found. Add GMAIL_1_REFRESH_TOKEN to .env")
             
-        self.accounts = [GmailAccount(a["email"], a["refresh_token"]) for a in accounts_data]
+        self.accounts = [GmailAccount(a["email"], a["refresh_token"], a.get("group", "all")) for a in accounts_data]
         self._index = 0
         logger.info(f"[SMTP Pool] Loaded {len(self.accounts)} accounts.")
 
@@ -208,16 +210,28 @@ class SMTPPool:
         """Total daily limit across all accounts."""
         return sum(a.max_per_day for a in self.accounts)
 
-    def get_next_account(self) -> Optional[GmailAccount]:
-        """Get the next available account via round-robin."""
+    def get_next_account(self, sender_group: str = "all") -> Optional[GmailAccount]:
+        """Get the next available account via round-robin, filtered by sender_group."""
+        # Find accounts that either belong to the requested group OR if group is 'all', use all accounts.
+        # Likewise, if an account's group is 'all', it can send for any project.
+        usable_accounts = [
+            a for a in self.accounts 
+            if sender_group == "all" or a.group == "all" or a.group == sender_group
+        ]
+        
+        if not usable_accounts:
+            return None
+            
         checked = 0
-        while checked < len(self.accounts):
-            account = self.accounts[self._index]
-            self._index = (self._index + 1) % len(self.accounts)
+        while checked < len(usable_accounts):
+            # Ensure index wraps within usable_accounts length
+            idx = self._index % len(usable_accounts)
+            account = usable_accounts[idx]
+            self._index += 1
             if account.can_send:
                 return account
             checked += 1
-        return None  # all accounts exhausted
+        return None  # all usable accounts exhausted
 
     def send_email(self, account: GmailAccount, to_addr: str, subject: str, body_html: str, dry_run: bool = False, delay_min: Optional[int] = None, delay_max: Optional[int] = None, sender_name: Optional[str] = None) -> dict:
         """Send an HTML email via SMTP from the given account.

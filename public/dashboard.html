@@ -2030,6 +2030,7 @@
                             <tr class="border-b border-gray-800 text-gray-500 text-xs">
                                 <th class="text-left px-4 py-3 font-medium">Project Name</th>
                                 <th class="text-left px-4 py-3 font-medium">Date Added</th>
+                                <th class="text-left px-4 py-3 font-medium">Sender Group</th>
                                 <th class="text-left px-4 py-3 font-medium">Leads</th>
                                 <th class="text-left px-4 py-3 font-medium">With Email</th>
                                 <th class="text-left px-4 py-3 font-medium">With IG</th>
@@ -2048,6 +2049,13 @@
                                     </td>
                                     <td class="px-4 py-3 text-gray-400">${p.created_at ? new Date(p.created_at).toLocaleDateString() : '\u2014'}</td>
                                     <td class="px-4 py-3">
+                                        <select onchange="changeSenderGroup('${p.id}', this.value)"
+                                            class="bg-gray-800 border border-gray-700 text-gray-300 text-xs rounded px-2 py-1 focus:outline-none focus:border-violet-500 transition-colors cursor-pointer">
+                                            <!-- Options will be populated and selected dynamically -->
+                                            <option value="${p.sender_group || 'all'}">${p.sender_group || 'all'}</option>
+                                        </select>
+                                    </td>
+                                    <td class="px-4 py-3">
                                         <span class="bg-violet-900/40 text-violet-300 text-xs px-2 py-0.5 rounded-full">${p.lead_count}</span>
                                     </td>
                                     <td class="px-4 py-3">
@@ -2064,13 +2072,48 @@
                                     </td>
                                 </tr>
                             `).join('') : `
-                                <tr><td colspan="6" class="text-center text-gray-500 py-8">No projects found</td></tr>
+                                <tr><td colspan="7" class="text-center text-gray-500 py-8">No projects found</td></tr>
                             `}
                         </tbody>
                     </table>
                 </div>
             `;
             lucide.createIcons();
+
+            // Fetch available groups and populate selects
+            try {
+                const grpRes = await fetch('/api/sender-groups');
+                const grpData = await grpRes.json();
+                const groups = grpData.groups || ["all"];
+                
+                projects.forEach(p => {
+                    const select = document.querySelector(`#proj-row-${p.id} select`);
+                    if (select) {
+                        const current = p.sender_group || 'all';
+                        select.innerHTML = groups.map(g => 
+                            `<option value="${g}" ${g === current ? 'selected' : ''}>${g}</option>`
+                        ).join('');
+                    }
+                });
+            } catch (e) {
+                console.error("Failed to load sender groups:", e);
+            }
+        }
+
+        async function changeSenderGroup(projectId, newGroup) {
+            try {
+                const res = await fetch(`/api/projects/${projectId}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sender_group: newGroup })
+                });
+                const data = await res.json();
+                if (data.error) throw new Error(data.error);
+                showToast(`\u2705 Sender group updated to "${newGroup}"`);
+            } catch (e) {
+                showToast('\u274c Failed to update sender group: ' + e.message);
+                loadProjectsTab(document.getElementById('contentArea')); // refresh to revert
+            }
         }
 
         async function renameProject(projectId, currentName) {

@@ -93,6 +93,19 @@ def list_projects():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/sender-groups', methods=['GET'])
+def list_sender_groups():
+    """List distinct sender groups currently configured in .env."""
+    try:
+        from execution.smtp_pool import SMTPPool
+        pool = SMTPPool()
+        groups = set(a.group for a in pool.accounts)
+        groups.add("all")
+        return jsonify({'groups': sorted(list(groups))})
+    except Exception as e:
+        logger.error(f"Failed to list sender groups: {e}")
+        return jsonify({'groups': ["all"]})
+
 @app.route('/api/projects/with-stats', methods=['GET'])
 def list_projects_with_stats():
     """List all projects with lead counts."""
@@ -118,6 +131,7 @@ def list_projects_with_stats():
                 'id': p['id'],
                 'name': p.get('name', ''),
                 'created_at': p.get('created_at', ''),
+                'sender_group': p.get('sender_group', 'all'),
                 'lead_count': lead_counts.get(p['id'], 0),
                 'email_count': email_counts.get(p['id'], 0),
                 'ig_count': ig_counts.get(p['id'], 0)
@@ -129,14 +143,23 @@ def list_projects_with_stats():
 
 @app.route('/api/projects/<project_id>', methods=['PATCH'])
 def update_project(project_id):
-    """Rename a project."""
+    """Update a project (name or sender_group)."""
     try:
         data = request.json
-        name = data.get('name', '').strip()
-        if not name:
-            return jsonify({'error': 'Name cannot be empty'}), 400
-        supabase.table('projects').update({'name': name}).eq('id', project_id).execute()
-        return jsonify({'success': True, 'name': name})
+        updates = {}
+        if 'name' in data:
+            name = data.get('name', '').strip()
+            if not name:
+                return jsonify({'error': 'Name cannot be empty'}), 400
+            updates['name'] = name
+        if 'sender_group' in data:
+            updates['sender_group'] = data.get('sender_group', 'all').strip()
+
+        if not updates:
+            return jsonify({'success': True})
+
+        supabase.table('projects').update(updates).eq('id', project_id).execute()
+        return jsonify({'success': True, **updates})
     except Exception as e:
         logger.error(f"Update project error: {e}")
         return jsonify({'error': str(e)}), 500
@@ -172,7 +195,8 @@ def create_project():
         result = supabase.table('projects').insert({
             'name': name, 
             'description': description,
-            'custom_instructions': custom_instructions
+            'custom_instructions': custom_instructions,
+            'sender_group': 'all'
         }).execute()
         
         project = result.data[0]
@@ -1614,6 +1638,12 @@ def send_test_sequence():
             subject = subject.replace(f'{{{{{key}}}}}', val)
             body = body.replace(f'{{{{{key}}}}}', val)
             
+        # Fetch project's sender group
+        sender_group = "all"
+        proj = supabase.table('projects').select('sender_group').eq('id', project_id).execute()
+        if proj.data:
+            sender_group = proj.data[0].get('sender_group', 'all')
+
         # Send via SMTP Pool
         from execution.smtp_pool import SMTPPool
         try:
@@ -1626,7 +1656,7 @@ def send_test_sequence():
             to_email = to_email.strip().rstrip('.,;:)!% ]').strip()
             if not to_email: continue
             
-            account = pool.get_next_account()
+            account = pool.get_next_account(sender_group)
             if not account:
                 results.append({'email': to_email, 'success': False, 'error': 'No available SMTP accounts remaining'})
                 continue
@@ -1641,21 +1671,72 @@ def send_test_sequence():
         logger.error(f"Test sequence error: {e}")
         return jsonify({'error': str(e)}), 500
 
+import threading
+from execution.smtp_pool import SMTPPool
+
+def _run_sends_for_project(project_id, dry_run=False, contact_ids=None):
+    """Core logic to run sends for a specific project. Runs synchronously."""
+    try:
+        from execution.send_emails import get_pending_sequences_for_sending, process_sequence_for_sending
+        
+        # Fetch project's sender group
+        sender_group = "all"
+        proj = supabase.table('projects').select('sender_group').eq('id', project_id).execute()
+        if proj.data:
+            sender_group = proj.data[0].get('sender_group', 'all')
+            
+        pool = SMTPPool()
+        
+        # Get pending sequences for this project, optionally filtered by contact_ids
+        pending_sequences = get_pending_sequences_for_sending(project_id=project_id, contact_ids=contact_ids)
+        
+        sent_count = 0
+        skipped_count = 0
+        error_count = 0
+
+        for seq in pending_sequences:
+            account = pool.get_next_account(sender_group)
+            if not account:
+                logger.warning(f"SMTP pool exhausted for sender group '{sender_group}'. Stopping sends for project {project_id}.")
+                break # Stop processing if no accounts are available
+
+            success, message = process_sequence_for_sending(seq, account, dry_run)
+            if success:
+                sent_count += 1
+            else:
+                error_count += 1
+                logger.error(f"Failed to send sequence {seq.get('id')}: {message}")
+        
+        logger.info(f"Project {project_id} send run complete. Sent: {sent_count}, Errors: {error_count}")
+        return sent_count, error_count
+    except Exception as e:
+        logger.error(f"Error in _run_sends_for_project for project {project_id}: {e}")
+        return 0, len(contact_ids) if contact_ids else 0 # Assume all failed if setup fails
+
 
 @app.route('/api/sequences/send', methods=['POST'])
 def trigger_send():
     """Send pending scheduled emails."""
     try:
         data = request.json or {}
-        limit = data.get('limit', 600)
+        limit = data.get('limit', 600) # This limit is now handled internally by get_pending_sequences_for_sending
         dry_run = data.get('dry_run', False)
         project_id = data.get('project_id')
         contact_ids = data.get('contact_ids') # For "Send Selected"
         
         def run_send():
             try:
-                from execution.send_emails import send_pending_emails
-                send_pending_emails(limit=limit, dry_run=dry_run, project_id=project_id, contact_ids=contact_ids)
+                if project_id:
+                    _run_sends_for_project(project_id, dry_run=dry_run, contact_ids=contact_ids)
+                else:
+                    # If no project_id, iterate through all projects with pending emails
+                    # This is a simplified approach; a more robust solution might involve
+                    # fetching all projects and running _run_sends_for_project for each.
+                    # For now, we'll assume project_id is usually provided or this is a global trigger.
+                    logger.warning("Global send trigger without project_id is not fully implemented with sender_groups.")
+                    # Fallback to old behavior if no project_id is provided for global send
+                    from execution.send_emails import send_pending_emails
+                    send_pending_emails(limit=limit, dry_run=dry_run, project_id=project_id, contact_ids=contact_ids)
             except Exception as e:
                 logger.error(f"Background send error: {e}")
 
@@ -1696,8 +1777,26 @@ def trigger_daily_run():
 
         def run_daily():
             try:
-                from execution.daily_run import daily_run
-                daily_run(limit=limit, dry_run=dry_run, project_id=project_id)
+                # Step 1: Check replies
+                from execution.check_replies import check_all_replies
+                logger.info("Starting daily run: Checking replies...")
+                reply_stats = check_all_replies(days=7)
+                logger.info(f"Reply check complete: {reply_stats}")
+
+                # Step 2: Send pending emails
+                logger.info("Starting daily run: Sending pending emails...")
+                if project_id:
+                    _run_sends_for_project(project_id, dry_run=dry_run)
+                else:
+                    # For a global daily run, we need to iterate through all projects
+                    # and run sends for each, respecting their sender_groups.
+                    # This is a more complex operation. For now, if no project_id,
+                    # we'll use the original global send_pending_emails.
+                    logger.warning("Global daily run without project_id is not fully implemented with sender_groups for sending.")
+                    from execution.send_emails import send_pending_emails
+                    send_pending_emails(limit=limit, dry_run=dry_run)
+                logger.info("Daily run: Sending pending emails complete.")
+
             except Exception as e:
                 logger.error(f"Background daily run error: {e}")
 
@@ -1714,11 +1813,19 @@ def trigger_daily_run():
 def get_smtp_capacity():
     """Get today's total SMTP capacity and usage (Rolling 24h)."""
     try:
+        project_id = request.args.get('project_id') # Optional: filter by project's sender_group
         from execution.smtp_pool import SMTPPool
         try:
             pool = SMTPPool()
-            used = pool.get_total_usage()
-            limit = pool.get_total_limit()
+            
+            sender_group = "all"
+            if project_id:
+                proj = supabase.table('projects').select('sender_group').eq('id', project_id).execute()
+                if proj.data:
+                    sender_group = proj.data[0].get('sender_group', 'all')
+            
+            used = pool.get_total_usage(sender_group=sender_group)
+            limit = pool.get_total_limit(sender_group=sender_group)
             return jsonify({'used': used, 'limit': limit})
         except Exception as e:
             logger.warning(f"Error loading SMTPPool for capacity check: {e}")
