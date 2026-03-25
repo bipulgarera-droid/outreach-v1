@@ -197,18 +197,26 @@ class SMTPPool:
         self._index = 0
         logger.info(f"[SMTP Pool] Loaded {len(self.accounts)} accounts.")
 
-    def get_total_usage(self) -> int:
-        """Sum of all sends today across all accounts in the pool."""
+    def get_total_usage(self, sender_group: str = "all") -> int:
+        """Sum of all sends today across all applicable accounts in the pool."""
+        usable_accounts = [
+            a for a in self.accounts 
+            if sender_group == "all" or a.group == "all" or a.group == sender_group
+        ]
         total = 0
-        for account in self.accounts:
+        for account in usable_accounts:
             # can_send property triggers the cache update
             _ = account.can_send 
             total += account._sends_today_cache
         return total
 
-    def get_total_limit(self) -> int:
-        """Total daily limit across all accounts."""
-        return sum(a.max_per_day for a in self.accounts)
+    def get_total_limit(self, sender_group: str = "all") -> int:
+        """Total daily limit across all applicable accounts."""
+        usable_accounts = [
+            a for a in self.accounts 
+            if sender_group == "all" or a.group == "all" or a.group == sender_group
+        ]
+        return sum(a.max_per_day for a in usable_accounts)
 
     def get_next_account(self, sender_group: str = "all") -> Optional[GmailAccount]:
         """Get the next available account via round-robin, filtered by sender_group."""
