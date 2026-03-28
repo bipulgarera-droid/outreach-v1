@@ -88,10 +88,10 @@ def store_apify_results(results: list[dict], query_label: str, project_id: str =
     existing_emails = set()
     existing_linkedin = set()
     if project_id:
-        res = supabase.table('contacts').select('email, linkedin').eq('project_id', project_id).execute()
+        res = supabase.table('contacts').select('email, linkedin_url').eq('project_id', project_id).execute()
         for r in res.data:
             if r.get('email'): existing_emails.add(r['email'].lower())
-            if r.get('linkedin'): existing_linkedin.add(r['linkedin'].lower())
+            if r.get('linkedin_url'): existing_linkedin.add(r['linkedin_url'].lower())
 
     leads_to_insert = []
     for item in results:
@@ -122,23 +122,40 @@ def store_apify_results(results: list[dict], query_label: str, project_id: str =
         if email_clean: existing_emails.add(email_clean)
         if li_clean: existing_linkedin.add(li_clean)
 
+        city = person.get('city') or item.get('city') or ''
+        state = person.get('state') or item.get('state') or ''
+        country = person.get('country') or item.get('country') or ''
+        location_parts = [p for p in [city, state, country] if p]
+        location_str = ', '.join(location_parts) if location_parts else None
+
         leads_to_insert.append({
             'name': name,
             'email': email_clean if email_clean else None,
-            'linkedin': li_clean,
-            'job_title': job_title,
+            'linkedin_url': li_clean if li_clean else None,
             'company': company_name,
-            'source_url': domain, # Often acts as company domain
+            'phone': person.get('mobile_number') or item.get('mobile_number') or None,
+            'location': location_str,
+            'niche': company.get('industry') or item.get('industry') or None,
+            'source_url': domain if domain else None,
             'project_id': project_id,
             'status': 'new',
             'source': source_str,
             'enrichment_data': {
-                'city': person.get('city') or item.get('city'),
-                'country': person.get('country') or item.get('country'),
+                'job_title': job_title,
+                'city': city or None,
+                'state': state or None,
+                'country': country or None,
                 'industry': company.get('industry') or item.get('industry'),
+                'website': company.get('company_website') or item.get('company_website'),
+                'company_website': company.get('company_website') or item.get('company_website'),
                 'company_size': company.get('company_size') or item.get('company_size'),
                 'company_linkedin': company.get('company_linkedin') or item.get('company_linkedin'),
+                'seniority_level': person.get('seniority_level') or item.get('seniority_level'),
+                'functional_level': person.get('functional_level') or item.get('functional_level'),
                 'personal_email': person.get('personal_email') or item.get('personal_email'),
+                'headline': person.get('headline') or item.get('headline'),
+                'company_founded_year': item.get('company_founded_year'),
+                'company_annual_revenue': item.get('company_annual_revenue_clean'),
                 'keywords': context.get('keywords') or item.get('keywords'),
                 'technologies': context.get('company_technologies') or item.get('company_technologies')
             }
