@@ -894,7 +894,8 @@ def trigger_manual_verification():
                     if not c.get('email'):
                         job['done'] += 1
                         job['skipped'] += 1
-                    elif v_status in ['valid', 'invalid']:
+                    elif v_status:
+                        # Skip if it already has ANY verification status (valid, invalid, risky, etc.)
                         job['done'] += 1
                         job['skipped'] += 1
                     else:
