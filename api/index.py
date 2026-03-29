@@ -891,7 +891,7 @@ def trigger_manual_verification():
 
                 # Filter out contacts with no email upfront, or already verified
                 to_verify = []
-                for c in contacts.data:
+                for c in all_contacts_data:
                     enrichment_data = c.get('enrichment_data') or {}
                     if isinstance(enrichment_data, str):
                         try: enrichment_data = _json.loads(enrichment_data)
