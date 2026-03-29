@@ -1763,48 +1763,6 @@ def send_test_sequence():
         logger.error(f"Test sequence error: {e}")
         return jsonify({'error': str(e)}), 500
 
-import threading
-from execution.smtp_pool import SMTPPool
-
-def _run_sends_for_project(project_id, dry_run=False, contact_ids=None):
-    """Core logic to run sends for a specific project. Runs synchronously."""
-    try:
-        from execution.send_emails import get_pending_sequences_for_sending, process_sequence_for_sending
-        
-        # Fetch project's sender group
-        sender_group = "all"
-        proj = supabase.table('projects').select('sender_group').eq('id', project_id).execute()
-        if proj.data:
-            sender_group = proj.data[0].get('sender_group', 'all')
-            
-        pool = SMTPPool()
-        
-        # Get pending sequences for this project, optionally filtered by contact_ids
-        pending_sequences = get_pending_sequences_for_sending(project_id=project_id, contact_ids=contact_ids)
-        
-        sent_count = 0
-        skipped_count = 0
-        error_count = 0
-
-        for seq in pending_sequences:
-            account = pool.get_next_account(sender_group)
-            if not account:
-                logger.warning(f"SMTP pool exhausted for sender group '{sender_group}'. Stopping sends for project {project_id}.")
-                break # Stop processing if no accounts are available
-
-            success, message = process_sequence_for_sending(seq, account, dry_run)
-            if success:
-                sent_count += 1
-            else:
-                error_count += 1
-                logger.error(f"Failed to send sequence {seq.get('id')}: {message}")
-        
-        logger.info(f"Project {project_id} send run complete. Sent: {sent_count}, Errors: {error_count}")
-        return sent_count, error_count
-    except Exception as e:
-        logger.error(f"Error in _run_sends_for_project for project {project_id}: {e}")
-        return 0, len(contact_ids) if contact_ids else 0 # Assume all failed if setup fails
-
 
 @app.route('/api/sequences/send', methods=['POST'])
 def trigger_send():
@@ -1818,17 +1776,8 @@ def trigger_send():
         
         def run_send():
             try:
-                if project_id:
-                    _run_sends_for_project(project_id, dry_run=dry_run, contact_ids=contact_ids)
-                else:
-                    # If no project_id, iterate through all projects with pending emails
-                    # This is a simplified approach; a more robust solution might involve
-                    # fetching all projects and running _run_sends_for_project for each.
-                    # For now, we'll assume project_id is usually provided or this is a global trigger.
-                    logger.warning("Global send trigger without project_id is not fully implemented with sender_groups.")
-                    # Fallback to old behavior if no project_id is provided for global send
-                    from execution.send_emails import send_pending_emails
-                    send_pending_emails(limit=limit, dry_run=dry_run, project_id=project_id, contact_ids=contact_ids)
+                from execution.send_emails import send_pending_emails
+                send_pending_emails(limit=limit, dry_run=dry_run, project_id=project_id, contact_ids=contact_ids)
             except Exception as e:
                 logger.error(f"Background send error: {e}")
 
@@ -1877,16 +1826,8 @@ def trigger_daily_run():
 
                 # Step 2: Send pending emails
                 logger.info("Starting daily run: Sending pending emails...")
-                if project_id:
-                    _run_sends_for_project(project_id, dry_run=dry_run)
-                else:
-                    # For a global daily run, we need to iterate through all projects
-                    # and run sends for each, respecting their sender_groups.
-                    # This is a more complex operation. For now, if no project_id,
-                    # we'll use the original global send_pending_emails.
-                    logger.warning("Global daily run without project_id is not fully implemented with sender_groups for sending.")
-                    from execution.send_emails import send_pending_emails
-                    send_pending_emails(limit=limit, dry_run=dry_run)
+                from execution.send_emails import send_pending_emails
+                send_pending_emails(limit=limit, dry_run=dry_run, project_id=project_id)
                 logger.info("Daily run: Sending pending emails complete.")
 
             except Exception as e:

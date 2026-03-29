@@ -88,6 +88,14 @@ def send_pending_emails(limit: int = 600, dry_run: bool = False, project_id: str
     sequences = result.data or []
     logger.info(f"Found {len(sequences)} emails ready to send")
     
+    # Fetch sender_groups for all involved projects
+    project_ids = list(set([s.get('project_id') for s in sequences if s.get('project_id')]))
+    sender_groups = {}
+    if project_ids:
+        proj_res = supabase.table('projects').select('id, sender_group').in_('id', project_ids).execute()
+        for p in (proj_res.data or []):
+            sender_groups[p['id']] = p.get('sender_group', 'all')
+            
     stats = {'processed': 0, 'sent': 0, 'skipped': 0, 'errors': 0}
     
     for seq in sequences:
@@ -123,13 +131,16 @@ def send_pending_emails(limit: int = 600, dry_run: bool = False, project_id: str
                 continue
             
             # Get next available email account
-            account = pool.get_next_account()
+            proj_id = seq.get('project_id')
+            sender_group = sender_groups.get(proj_id, 'all')
+            
+            account = pool.get_next_account(sender_group)
             if not account:
-                logger.error("All SMTP accounts exhausted their hourly/daily limits. Stopping.")
+                logger.error(f"All SMTP accounts exhausted their hourly/daily limits for sender group '{sender_group}'. Stopping.")
                 break
                 
-            usage = pool.get_total_usage()
-            limit_total = pool.get_total_limit()
+            usage = pool.get_total_usage(sender_group)
+            limit_total = pool.get_total_limit(sender_group)
             logger.info(f"{'[DRY RUN] ' if dry_run else ''}[{usage}/{limit_total}] Sending step {seq['step_number']} to {to_email} from {account.email}")
             
             # --- Dynamic Sender Identity ---
