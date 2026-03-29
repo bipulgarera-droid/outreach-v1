@@ -1525,8 +1525,10 @@ def create_sequences():
                         except Exception: enrichment_data = {}
 
                     contact_email = (contact.get('email') or '').strip().rstrip('.,;:)!% ]').strip()
-                    if contact_email and enrichment_data.get('verification_status') != 'valid':
-                        logger.info(f"Contact {contact['id']} has unverified/risky email '{contact_email}'. Verifying now...")
+                    v_status_existing = enrichment_data.get('verification_status')
+                    
+                    if contact_email and v_status_existing not in ('valid', 'risky', 'invalid'):
+                        logger.info(f"Contact {contact['id']} lacks verification status. Verifying now...")
                         from execution.verify_email import check_email
                         v_status, v_reason = check_email(contact_email)
                         
