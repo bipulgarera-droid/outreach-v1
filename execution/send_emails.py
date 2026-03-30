@@ -127,11 +127,9 @@ def send_pending_emails(limit: int = 600, dry_run: bool = False, project_id: str
                 stats['skipped'] += 1
                 continue
             elif v_status == 'risky':
-                _log(f"BOUNCE PROTECTION: Skipping {to_email} (Status: RISKY, Reason: {ed.get('verification_reason', '?')}). marking as skipped_risky.", level='warning')
-                if not dry_run:
-                    supabase.table('email_sequences').update({'status': 'skipped'}).eq('id', seq['id']).execute()
-                stats['skipped'] += 1
-                continue
+                _log(f"BOUNCE PROTECTION: Proceeding with {to_email} (Status: RISKY, Reason: {ed.get('verification_reason', '?')}).", level='warning')
+                # We proceed with risky emails as per user preference (Zero-Miss)
+                pass 
             
             # REPLY GUARD: Check if contact has replied — if so, cancel all their pending emails
             contact_status = supabase.table('contacts').select('status').eq('id', seq['contact_id']).execute()

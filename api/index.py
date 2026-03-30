@@ -2041,7 +2041,7 @@ def trigger_daily_run():
                 # Step 2: Send pending emails
                 job.info("Step 2: Dispatching scheduled emails...")
                 from execution.send_emails import send_pending_emails
-                results = send_pending_emails(limit=limit, dry_run=dry_run, project_id=project_id, logger_callback=job.info)
+                results = send_pending_emails(limit=limit, dry_run=dry_run, project_id=project_id, skip_reply_check=True, logger_callback=job.info)
                 job.success(f"Daily run finished. Results: {results}")
                 job.complete('completed')
 
