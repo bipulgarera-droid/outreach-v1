@@ -155,14 +155,18 @@ def check_all_replies(days=7, logger_callback=None):
             for msg_id in reversed(ids):
                 try:
                     res_status, header_data = mail.fetch(msg_id, "(BODY[HEADER.FIELDS (FROM SUBJECT)])")
-                    if res_status != 'OK' or not header_data or not header_data[0]: continue
-                    msg_obj = email.message_from_bytes(header_data[0][1])
+                    if res_status != 'OK' or not header_data or not isinstance(header_data[0], tuple):
+                        continue
+                        
+                    raw_header = header_data[0][1]
+                    if raw_header is None: continue
                     
+                    msg_obj = email.message_from_bytes(raw_header)
                     from_hdr = _decode_header_value(msg_obj.get("From", ""))
                     subject_hdr = _decode_header_value(msg_obj.get("Subject", ""))
                     sender = _extract_sender_email(from_hdr)
                     
-                    if sender == acct_email.lower(): continue
+                    if not sender or sender == acct_email.lower(): continue
 
                     # 1. Check for Bounce
                     is_b = is_bounce(from_hdr, subject_hdr)
@@ -171,32 +175,34 @@ def check_all_replies(days=7, logger_callback=None):
                     contact_id = None
                     project_id = None
                     full_msg = None
+                    body = ""
                     
                     if is_b:
                         # Deep bounce detection
                         res_status, full_data = mail.fetch(msg_id, "(RFC822)")
-                        if res_status == 'OK' and full_data and full_data[0]:
-                            full_msg = email.message_from_bytes(full_data[0][1])
-                            body = ""
-                            if full_msg.is_multipart():
-                                for part in full_msg.walk():
-                                    if part.get_content_type() == "text/plain":
-                                        payload = part.get_payload(decode=True)
-                                        if payload: body += payload.decode(errors='replace')
-                            else:
-                                payload = full_msg.get_payload(decode=True)
-                                if payload: body = payload.decode(errors='replace')
-                            
-                            for p_email in prospect_emails:
-                                if p_email in body.lower():
-                                    matches = [c for c in contacts if (c.get('email') or '').lower() == p_email]
-                                    if matches:
-                                        contact_id = matches[0]['id']
-                                        project_id = matches[0]['project_id']
-                                        msg = f"  [BOUNCE] Found recipient: {p_email}"
-                                        print(msg)
-                                        if logger_callback: logger_callback(msg)
-                                        break
+                        if res_status == 'OK' and full_data and isinstance(full_data[0], tuple):
+                            raw_full = full_data[0][1]
+                            if raw_full:
+                                full_msg = email.message_from_bytes(raw_full)
+                                if full_msg.is_multipart():
+                                    for part in full_msg.walk():
+                                        if part.get_content_type() == "text/plain":
+                                            payload = part.get_payload(decode=True)
+                                            if payload: body += payload.decode(errors='replace')
+                                else:
+                                    payload = full_msg.get_payload(decode=True)
+                                    if payload: body = payload.decode(errors='replace')
+                                
+                                for p_email in prospect_emails:
+                                    if p_email in body.lower():
+                                        matches = [c for c in contacts if (c.get('email') or '').lower() == p_email]
+                                        if matches:
+                                            contact_id = matches[0]['id']
+                                            project_id = matches[0]['project_id']
+                                            msg = f"  [BOUNCE] Found recipient: {p_email}"
+                                            print(msg)
+                                            if logger_callback: logger_callback(msg)
+                                            break
                     else:
                         # Normal Reply detection
                         if sender in prospect_emails:
@@ -214,24 +220,29 @@ def check_all_replies(days=7, logger_callback=None):
                     if contact_id:
                         if not is_b:
                             res_status, full_data = mail.fetch(msg_id, "(RFC822)")
-                            if res_status == 'OK' and full_data and full_data[0]:
-                                full_msg = email.message_from_bytes(full_data[0][1])
-                                body = ""
-                                if full_msg.is_multipart():
-                                    for part in full_msg.walk():
-                                        if part.get_content_type() == "text/plain":
-                                            payload = part.get_payload(decode=True)
-                                            if payload: body += payload.decode(errors='replace')
-                                else:
-                                    payload = full_msg.get_payload(decode=True)
-                                    if payload: body = payload.decode(errors='replace')
+                            if res_status == 'OK' and full_data and isinstance(full_data[0], tuple):
+                                raw_full = full_data[0][1]
+                                if raw_full:
+                                    full_msg = email.message_from_bytes(raw_full)
+                                    if full_msg.is_multipart():
+                                        for part in full_msg.walk():
+                                            if part.get_content_type() == "text/plain":
+                                                payload = part.get_payload(decode=True)
+                                                if payload: body += payload.decode(errors='replace')
+                                    else:
+                                        payload = full_msg.get_payload(decode=True)
+                                        if payload: body = payload.decode(errors='replace')
 
                         if is_b:
                             supabase.table('contacts').update({'status': 'bounced'}).eq('id', contact_id).execute()
+                            # Optional: Update email_sequences too
                         elif full_msg:
                             msg = f"  [REPLY] {sender}"
                             print(msg)
                             if logger_callback: logger_callback(msg)
+                            
+                            m_id = full_msg.get('Message-ID', '')
+                            t_id = full_msg.get('Thread-ID', '')
                             
                             # Insert into replies table with project_id
                             supabase.table('replies').insert({
@@ -241,15 +252,17 @@ def check_all_replies(days=7, logger_callback=None):
                                 'recipient_email': acct_email,
                                 'subject': subject_hdr,
                                 'body': body[:5000],
-                                'message_id': full_msg.get('Message-ID', ''),
-                                'thread_id': full_msg.get('Thread-ID', '')
+                                'message_id': str(m_id) if m_id else '',
+                                'thread_id': str(t_id) if t_id else ''
                             }).execute()
                             
                             # Update contact status
                             supabase.table('contacts').update({'status': 'replied'}).eq('id', contact_id).execute()
                             
                 except Exception as e:
-                    print(f"  Error on msg {msg_id}: {e}")
+                    msg = f"  Error on msg {msg_id}: {e}"
+                    print(msg)
+                    if logger_callback: logger_callback(msg)
             mail.logout()
         except Exception as e:
             msg = f"  Connection failed for {acct_email}: {e}"
