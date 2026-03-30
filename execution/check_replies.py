@@ -177,13 +177,6 @@ def check_all_replies(days=7, logger_callback=None):
                     sender = sender_email.strip()
                     
                     if not sender or sender == acct_email.lower(): continue
-                    
-                    # --- DIAGNOSTIC DUMP ---
-                    if acct_email == "bipulgarera2@gmail.com":
-                        msg = f"    [DUMP] From: {sender} | Subj: {subject_hdr[:40]}"
-                        print(msg)
-                        if logger_callback: logger_callback(msg)
-                    # -----------------------
 
                     # 1. Check if Human Sender matches a contact (Highest Priority)
                     if sender in prospect_emails:
