@@ -154,7 +154,14 @@ def check_all_replies(days=7, logger_callback=None):
             
             for msg_id in reversed(ids):
                 try:
-                    res_status, header_data = mail.fetch(msg_id, "(BODY[HEADER.FIELDS (FROM SUBJECT)])")
+                    m_id = None
+                    t_id = None
+                    contact_id = None
+                    project_id = None
+                    full_msg = None
+                    body = ""
+                    
+                    res_status, header_data = mail.fetch(msg_id, "(BODY[HEADER.FIELDS (FROM SUBJECT DATE)])")
                     if res_status != 'OK' or not header_data or not isinstance(header_data[0], tuple):
                         continue
                         
@@ -171,22 +178,29 @@ def check_all_replies(days=7, logger_callback=None):
                     
                     if not sender or sender == acct_email.lower(): continue
 
-                    # 1. Check for Bounce
+                    # 1. Check if Human Sender matches a contact (Highest Priority)
+                    if sender in prospect_emails:
+                        contact_id, project_id = prospect_emails[sender]
+                    else:
+                        domain = sender.split('@')[-1]
+                        if domain and domain not in BLACKLIST_DOMAINS:
+                            match = domain_map.get(domain)
+                            if match:
+                                contact_id, project_id = match
+
+                    # 2. Check if it's a bounce (Headers)
                     is_b = is_bounce(from_hdr, subject_hdr)
                     
-                    # 2. Identify Contact
-                    contact_id = None
-                    project_id = None
-                    full_msg = None
-                    body = ""
-                    
-                    if is_b:
-                        # Deep bounce detection
+                    # 3. Fallback: Deep Body Scan for Bounces
+                    # If we haven't found a contact AND it's a bounce, search the body for prospect emails
+                    # OR if we HAVE a contact, we need the body anyway to save the reply
+                    if not contact_id and is_b:
                         res_status, fd = mail.fetch(msg_id, "(RFC822)")
                         if res_status == 'OK' and fd and isinstance(fd[0], tuple):
                             raw_full = fd[0][1]
                             if raw_full:
                                 full_msg = email.message_from_bytes(raw_full)
+                                # Extract Body
                                 if full_msg.is_multipart():
                                     for part in full_msg.walk():
                                         if part.get_content_type() == "text/plain":
@@ -199,41 +213,31 @@ def check_all_replies(days=7, logger_callback=None):
                                 for p_email, match_data in prospect_emails.items():
                                     if p_email in body.lower():
                                         contact_id, project_id = match_data
-                                        msg = f"  [BOUNCE] Found recipient: {p_email}"
-                                        print(msg)
-                                        if logger_callback: logger_callback(msg)
+                                        is_b = True # Ensure is_b is set if body match hits
                                         break
-                    else:
-                        # Normal Reply detection
-                        if sender in prospect_emails:
-                            contact_id, project_id = prospect_emails[sender]
-                        else:
-                            domain = sender.split('@')[-1]
-                            if domain and domain not in BLACKLIST_DOMAINS:
-                                match = domain_map.get(domain)
-                                if match:
-                                    contact_id, project_id = match
-
+                    
                     if contact_id:
-                        m_id = None
-                        t_id = None
-                        
-                        if not is_b:
-                            res_status, full_data = mail.fetch(msg_id, "(RFC822)")
-                            if res_status == 'OK' and full_data and isinstance(full_data[0], tuple):
-                                raw_full = full_data[0][1]
+                        # 4. Fetch body for Replies (if not already fetched for bounce)
+                        if not is_b and not body:
+                            res_status, fd = mail.fetch(msg_id, "(RFC822)")
+                            if res_status == 'OK' and fd and isinstance(fd[0], tuple):
+                                raw_full = fd[0][1]
                                 if raw_full:
                                     full_msg = email.message_from_bytes(raw_full)
                                     if full_msg.is_multipart():
                                         for part in full_msg.walk():
                                             if part.get_content_type() == "text/plain":
-                                                payload = part.get_payload(decode=True)
-                                                if payload: body += payload.decode(errors='replace')
+                                                p = part.get_payload(decode=True)
+                                                if p: body += p.decode(errors='replace')
                                     else:
-                                        payload = full_msg.get_payload(decode=True)
-                                        if payload: body = payload.decode(errors='replace')
+                                        p = full_msg.get_payload(decode=True)
+                                        if p: body = p.decode(errors='replace')
 
+                        # 5. Commit to Database
                         if is_b:
+                            msg = f"  [BOUNCE] {sender} (Subject: {subject_hdr})"
+                            print(msg)
+                            if logger_callback: logger_callback(msg)
                             supabase.table('contacts').update({'status': 'bounced'}).eq('id', contact_id).execute()
                         else:
                             msg = f"  [REPLY] {sender}"
@@ -247,7 +251,6 @@ def check_all_replies(days=7, logger_callback=None):
                             m_id = str(m_id).strip() if m_id else None
                             t_id = str(t_id).strip() if t_id else None
                             
-                            # Insert into replies table (skip if duplicate)
                             try:
                                 supabase.table('replies').insert({
                                     'contact_id': contact_id,
@@ -260,12 +263,9 @@ def check_all_replies(days=7, logger_callback=None):
                                     'thread_id': t_id
                                 }).execute()
                             except Exception as e:
-                                if 'duplicate key' in str(e).lower():
-                                    pass # Expected conflict, skip
-                                else:
-                                    print(f"  Error inserting reply: {e}")
+                                if 'duplicate key' not in str(e).lower():
+                                    print(f"    Error inserting reply: {e}")
                             
-                            # Final Status Update
                             supabase.table('contacts').update({'status': 'replied'}).eq('id', contact_id).execute()
                             
                 except Exception as e:
