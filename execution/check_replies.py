@@ -241,22 +241,28 @@ def check_all_replies(days=7, logger_callback=None):
                             print(msg)
                             if logger_callback: logger_callback(msg)
                             
-                            m_id = full_msg.get('Message-ID', '')
-                            t_id = full_msg.get('Thread-ID', '')
+                            m_id = str(m_id).strip() if m_id else None
+                            t_id = str(t_id).strip() if t_id else None
                             
-                            # Insert into replies table with project_id
-                            supabase.table('replies').insert({
-                                'contact_id': contact_id,
-                                'project_id': project_id,
-                                'sender_email': sender,
-                                'recipient_email': acct_email,
-                                'subject': subject_hdr,
-                                'body': body[:5000],
-                                'message_id': str(m_id) if m_id else '',
-                                'thread_id': str(t_id) if t_id else ''
-                            }).execute()
+                            # Insert into replies table (skip if duplicate)
+                            try:
+                                supabase.table('replies').insert({
+                                    'contact_id': contact_id,
+                                    'project_id': project_id,
+                                    'sender_email': sender,
+                                    'recipient_email': acct_email,
+                                    'subject': subject_hdr,
+                                    'body': body[:5000],
+                                    'message_id': m_id,
+                                    'thread_id': t_id
+                                }).execute()
+                            except Exception as e:
+                                if 'duplicate key' in str(e).lower():
+                                    pass # Already logged, no need to error
+                                else:
+                                    print(f"  Error inserting reply: {e}")
                             
-                            # Update contact status
+                            # Update contact status (ALWAYS do this if a reply is found)
                             supabase.table('contacts').update({'status': 'replied'}).eq('id', contact_id).execute()
                             
                 except Exception as e:
