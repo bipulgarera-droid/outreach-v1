@@ -37,7 +37,7 @@ def is_bounce(from_addr: str, subject: str) -> bool:
     if any(x in s for x in ['undeliverable', 'delivery status notification', 'failure', 'returned mail']): return True
     return False
 
-def check_replies():
+def check_all_replies():
     """Main synchronizer using Service Role Key to bypass RLS."""
     print("--- Starting Hardened Reply Detection (Zero-Miss) ---")
     
@@ -188,4 +188,7 @@ def check_replies():
             print(f"  Connection failed for {acct_email}: {e}")
 
 if __name__ == "__main__":
-    check_replies()
+    check_all_replies()
+
+# Alias for backward compatibility
+check_replies = check_all_replies
