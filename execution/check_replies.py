@@ -212,11 +212,17 @@ def check_all_replies(days=7, logger_callback=None):
                     
                     # 2.5. Fallback: Subject-Based Rescue
                     if not contact_id and not is_b:
-                        is_reply = subject_hdr.lower().startswith('re:') or subject_hdr.lower().startswith('fwd:') or subject_hdr.lower().startswith('fw:')
-                        if is_reply:
-                            import re
-                            base_subj = re.sub(r'^(re|fwd|fw):\s*', '', subject_hdr, flags=re.I).strip().lower()
-                            candidate_cids = subject_map.get(base_subj, [])
+                        subj_lower = subject_hdr.lower()
+                        best_base = None
+                        
+                        # Find the longest matching known subject within the header
+                        for base in subject_map.keys():
+                            if len(base) > 5 and base in subj_lower:
+                                if not best_base or len(base) > len(best_base):
+                                    best_base = base
+                                    
+                        if best_base:
+                            candidate_cids = subject_map.get(best_base, [])
                             
                             if candidate_cids:
                                 domain_prefix = domain.split('.')[0].lower() if domain else ''
@@ -320,6 +326,8 @@ def check_all_replies(days=7, logger_callback=None):
                 except Exception as e:
                     import traceback
                     traceback.print_exc()
+                    logger.error(f"Background reply check error: {e}")
+                    job.error(f"Reply check failed: {e}")
             mail.logout()
         except Exception as e:
             msg = f"  Connection failed for {acct_email}: {e}"
