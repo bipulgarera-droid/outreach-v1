@@ -88,7 +88,7 @@ def check_all_replies(days=7, logger_callback=None):
             except: enrich = {}
         
         website = (enrich.get('website') or enrich.get('company_domain', '') or '').lower().strip()
-        if website:
+        if website and 'google.com/maps' not in website and 'google.com/search' not in website:
             w_domain = website.replace('https://', '').replace('http://', '').replace('www.', '').split('/')[0]
             if len(w_domain) > 3:
                 domain_map[w_domain] = cid
@@ -108,17 +108,17 @@ def check_all_replies(days=7, logger_callback=None):
 
     # 3. Scan Accounts
     for acct_email, acct_password in accounts:
-        print(f"\nScanning: {acct_email}...")
+        msg = f"\nScanning: {acct_email}..."
+        print(msg)
+        if logger_callback: logger_callback(msg)
         try:
             mail = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=30)
             mail.login(acct_email, acct_password)
             
-            # Select folder
             folder_status, _ = mail.select('"[Gmail]/All Mail"')
             if folder_status != 'OK':
                 mail.select('INBOX')
 
-            # Scan last X days
             since_date = (datetime.now() - timedelta(days=days)).strftime("%d-%b-%Y")
             status, message_ids = mail.search(None, f'(SINCE {since_date})')
             
@@ -127,36 +127,31 @@ def check_all_replies(days=7, logger_callback=None):
                 continue
                 
             ids = message_ids[0].split()
-            print(f"  Messages: {len(ids)}")
+            msg = f"  Messages: {len(ids)}"
+            print(msg)
+            if logger_callback: logger_callback(msg)
             
             for msg_id in reversed(ids):
                 try:
-                    # Headers first
                     _, header_data = mail.fetch(msg_id, "(BODY[HEADER.FIELDS (FROM SUBJECT)])")
                     if not header_data or not header_data[0]: continue
-                    msg = email.message_from_bytes(header_data[0][1])
+                    msg_obj = email.message_from_bytes(header_data[0][1])
                     
-                    from_hdr = _decode_header_value(msg.get("From", ""))
-                    subject_hdr = _decode_header_value(msg.get("Subject", ""))
+                    from_hdr = _decode_header_value(msg_obj.get("From", ""))
+                    subject_hdr = _decode_header_value(msg_obj.get("Subject", ""))
                     sender = _extract_sender_email(from_hdr)
                     
                     if sender == acct_email.lower(): continue
 
+                    # 1. Check for Bounce
+                    is_b = is_bounce(from_hdr, subject_hdr)
+                    
+                    # 2. Identify Contact
                     contact_id = None
-                    if sender in prospect_emails:
-                        # Find matching contact_id
-                        matches = [c['id'] for c in contacts if (c.get('email') or '').lower() == sender]
-                        contact_id = matches[0] if matches else None
-                    else:
-                        # Try domain match
-                        domain = sender.split('@')[-1]
-                        contact_id = domain_map.get(domain)
-
-                    if contact_id:
-                        # Full fetch for deep analysis and bounce detection
+                    if is_b:
+                        # Deep bounce detection
                         _, full_data = mail.fetch(msg_id, "(RFC822)")
                         full_msg = email.message_from_bytes(full_data[0][1])
-                        
                         body = ""
                         if full_msg.is_multipart():
                             for part in full_msg.walk():
@@ -164,13 +159,44 @@ def check_all_replies(days=7, logger_callback=None):
                                     body += part.get_payload(decode=True).decode(errors='replace')
                         else:
                             body = full_msg.get_payload(decode=True).decode(errors='replace')
+                        
+                        for p_email in prospect_emails:
+                            if p_email in body.lower():
+                                matches = [c['id'] for c in contacts if (c.get('email') or '').lower() == p_email]
+                                contact_id = matches[0] if matches else None
+                                if contact_id:
+                                    msg = f"  [BOUNCE] Found recipient: {p_email}"
+                                    print(msg)
+                                    if logger_callback: logger_callback(msg)
+                                    break
+                    else:
+                        # Normal Reply detection
+                        if sender in prospect_emails:
+                            matches = [c['id'] for c in contacts if (c.get('email') or '').lower() == sender]
+                            contact_id = matches[0] if matches else None
+                        else:
+                            domain = sender.split('@')[-1]
+                            if domain not in ['google.com', 'gmail.com', 'outlook.com', 'yahoo.com']:
+                                contact_id = domain_map.get(domain)
 
-                        if is_bounce(from_hdr, subject_hdr):
-                            print(f"  [BOUNCE] {sender}")
+                    if contact_id:
+                        if not is_b:
+                            _, full_data = mail.fetch(msg_id, "(RFC822)")
+                            full_msg = email.message_from_bytes(full_data[0][1])
+                            body = ""
+                            if full_msg.is_multipart():
+                                for part in full_msg.walk():
+                                    if part.get_content_type() == "text/plain":
+                                        body += part.get_payload(decode=True).decode(errors='replace')
+                            else:
+                                body = full_msg.get_payload(decode=True).decode(errors='replace')
+
+                        if is_b:
                             supabase.table('contacts').update({'status': 'bounced'}).eq('id', contact_id).execute()
                         else:
-                            print(f"  [REPLY] {sender}")
-                            # Save to replies table
+                            msg = f"  [REPLY] {sender}"
+                            print(msg)
+                            if logger_callback: logger_callback(msg)
                             supabase.table('replies').insert({
                                 'contact_id': contact_id,
                                 'sender_email': sender,
@@ -180,14 +206,15 @@ def check_all_replies(days=7, logger_callback=None):
                                 'message_id': full_msg.get('Message-ID', ''),
                                 'thread_id': full_msg.get('Thread-ID', '')
                             }).execute()
-                            # Update contact status
                             supabase.table('contacts').update({'status': 'replied'}).eq('id', contact_id).execute()
                             
                 except Exception as e:
                     print(f"  Error on msg {msg_id}: {e}")
             mail.logout()
         except Exception as e:
-            print(f"  Connection failed for {acct_email}: {e}")
+            msg = f"  Connection failed for {acct_email}: {e}"
+            print(msg)
+            if logger_callback: logger_callback(msg)
 
 if __name__ == "__main__":
     check_all_replies()
