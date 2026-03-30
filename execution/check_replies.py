@@ -22,8 +22,11 @@ import argparse
 import json
 import socket
 import ssl
+import time
 from datetime import datetime, timedelta
 from email.header import decode_header
+from google import genai
+from google.genai import types
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -38,6 +41,47 @@ logger = logging.getLogger(__name__)
 
 IMAP_HOST = "imap.gmail.com"
 IMAP_PORT = 993
+
+# Initialize Gemini Client
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+client = None
+if GEMINI_API_KEY:
+    client = genai.Client(api_key=GEMINI_API_KEY)
+
+
+def analyze_sentiment(text: str) -> tuple[str, float]:
+    """Analyze sentiment of an email reply using Gemini."""
+    if not client or not text:
+        return "unknown", 0.0
+    
+    try:
+        prompt = f"""
+        Analyze the sentiment of this cold email reply. 
+        Classify it as ONE of: positive, negative, neutral, question, or unsubscribe.
+        
+        - positive: Interested, wants a call, wants more info, "sounds great"
+        - negative: Not interested, "no thanks", "don't contact me"
+        - question: Asking for pricing, asking how we found them, asking for a demo
+        - unsubscribe: "remove me", "unsubscribe", "stop"
+        - neutral: Automatic out-of-office, "ok", "received"
+        
+        Reply:
+        \"\"\"{text[:2000]}\"\"\"
+        
+        Return ONLY a JSON object: {{"sentiment": "...", "score": 0.0-1.0}}
+        """
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
+        )
+        data = json.loads(response.text)
+        return data.get("sentiment", "unknown"), data.get("score", 0.0)
+    except Exception as e:
+        logger.warning(f"Sentiment analysis failed: {e}")
+        return "unknown", 0.0
 
 
 def _load_accounts_from_env() -> list[dict]:
@@ -82,6 +126,31 @@ def _get_imap_connection(acct_email: str, acct_password: str) -> imaplib.IMAP4_S
     return mail
 
 
+def _extract_body(msg) -> str:
+    """Recursively extract the plain text body from an email message."""
+    body = ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            content_type = part.get_content_type()
+            content_disposition = str(part.get("Content-Disposition"))
+            if content_type == "text/plain" and "attachment" not in content_disposition:
+                try:
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        body += payload.decode('utf-8', errors='ignore')
+                except: pass
+    else:
+        try:
+            payload = msg.get_payload(decode=True)
+            if payload:
+                body = payload.decode('utf-8', errors='ignore')
+        except: pass
+    
+    # Simple cleanup: remove large chunks of quoted text if possible
+    # (Optional: can be refined later)
+    return body.strip()
+
+
 def check_replies_for_account(acct_email: str, acct_password: str, prospect_emails: set, days: int = 7) -> tuple[list[str], list[str]]:
     """
     Connect via IMAP to a single Gmail account and look for:
@@ -115,7 +184,8 @@ def check_replies_for_account(acct_email: str, acct_password: str, prospect_emai
                 msg_data = None
                 for attempt in range(max_retries + 1):
                     try:
-                        status, msg_data = mail.fetch(msg_id, "(RFC822)")
+                        # Fetch RFC822 for body AND X-GM-THRID / X-GM-MSGID for threading/dedup
+                        status, msg_data = mail.fetch(msg_id, "(RFC822 X-GM-THRID X-GM-MSGID)")
                         if status == "OK":
                             break
                     except (socket.error, imaplib.IMAP4.error, imaplib.IMAP4.abort, ssl.SSLError):
@@ -135,10 +205,32 @@ def check_replies_for_account(acct_email: str, acct_password: str, prospect_emai
                 subject_header = _decode_header_value(msg.get("Subject", ""))
                 sender = _extract_sender_email(from_header)
 
+                # Extract Gmail metadata from the fetch response
+                # Format is usually [b'ID (X-GM-THRID 123 X-GM-MSGID 456 RFC822 {size})', b'...raw email...']
+                metadata_raw = msg_data[0][0].decode()
+                thread_id = re.search(r"X-GM-THRID (\d+)", metadata_raw)
+                thread_id = thread_id.group(1) if thread_id else None
+                message_id_gmail = re.search(r"X-GM-MSGID (\d+)", metadata_raw)
+                message_id_gmail = message_id_gmail.group(1) if message_id_gmail else None
+
                 # A. Direct Reply
                 if sender in prospect_emails:
                     logger.info(f"  ✅ Reply: {sender}")
-                    replied.append(sender)
+                    
+                    # Extract body for storage
+                    email_body = _extract_body(msg)
+                    sentiment, score = analyze_sentiment(email_body)
+                    
+                    replied.append({
+                        'email': sender,
+                        'subject': subject_header,
+                        'body': email_body,
+                        'sentiment': sentiment,
+                        'sentiment_score': score,
+                        'thread_id': thread_id,
+                        'message_id': message_id_gmail,
+                        'recipient_email': acct_email
+                    })
                     continue
 
                 # B. Bounce Detection
@@ -189,7 +281,7 @@ def check_replies_for_account(acct_email: str, acct_password: str, prospect_emai
             if mail: mail.logout()
         except: pass
 
-    return list(set(replied)), list(set(bounced))
+    return replied, list(set(bounced))
 
 
 def check_all_replies(days: int = 7) -> dict:
@@ -220,18 +312,47 @@ def check_all_replies(days: int = 7) -> dict:
 
     for acct in accounts:
         replied, bounced = check_replies_for_account(acct['email'], acct['app_password'], prospect_emails, days)
-        all_replied.update(replied)
+        # replied is now a list of dicts
+        for r in replied:
+            # Simple deduplication in-memory for this run
+            if not any(ar['message_id'] == r['message_id'] for ar in all_replied):
+                all_replied.append(r)
         all_bounced.update(bounced)
 
-    for email in all_replied:
+    for reply_data in all_replied:
+        email = reply_data['email']
         cid = email_to_id.get(email)
         if cid:
             try:
+                # 1. Look up contact to get project_id
+                contact_info = supabase.table('contacts').select('project_id').eq('id', cid).single().execute()
+                pid = contact_info.data.get('project_id') if contact_info.data else None
+
+                # 2. Check if reply already exists in DB to prevent duplicates across runs
+                existing = supabase.table('replies').select('id').eq('message_id', reply_data['message_id']).execute()
+                if not existing.data:
+                    # 3. Insert into replies table
+                    supabase.table('replies').insert({
+                        'contact_id': cid,
+                        'project_id': pid,
+                        'sender_email': email,
+                        'recipient_email': reply_data['recipient_email'],
+                        'subject': reply_data['subject'],
+                        'body': reply_data['body'],
+                        'sentiment': reply_data['sentiment'],
+                        'sentiment_score': reply_data['sentiment_score'],
+                        'thread_id': reply_data['thread_id'],
+                        'message_id': reply_data['message_id'],
+                        'received_at': datetime.utcnow().isoformat()
+                    }).execute()
+                    logger.info(f"Stored reply from {email} (Sentiment: {reply_data['sentiment']})")
+
+                # 4. Update contact status
                 supabase.table('contacts').update({'status': 'replied', 'updated_at': datetime.utcnow().isoformat()}).eq('id', cid).execute()
                 supabase.table('email_sequences').update({'status': 'cancelled'}).eq('contact_id', cid).eq('status', 'pending').execute()
                 logger.info(f"Marked {email} as REPLIED")
             except Exception as e:
-                logger.warning(f"Failed to update status for replied email {email}: {e}")
+                logger.warning(f"Failed to process reply for {email}: {e}")
 
     for email in all_bounced:
         cid = email_to_id.get(email)
