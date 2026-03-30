@@ -206,18 +206,10 @@ def check_all_replies(days=7, logger_callback=None):
                             raw_full = fd[0][1]
                             if raw_full:
                                 full_msg = email.message_from_bytes(raw_full)
-                                # Extract Body
-                                if full_msg.is_multipart():
-                                    for part in full_msg.walk():
-                                        if part.get_content_type() == "text/plain":
-                                            p = part.get_payload(decode=True)
-                                            if p: body += p.decode(errors='replace')
-                                else:
-                                    p = full_msg.get_payload(decode=True)
-                                    if p: body = p.decode(errors='replace')
+                                raw_str = raw_full.decode(errors='replace').lower()
                                 
                                 for p_email, match_data in prospect_emails.items():
-                                    if p_email in body.lower():
+                                    if p_email in raw_str:
                                         contact_id, project_id = match_data
                                         is_b = True # Ensure is_b is set if body match hits
                                         break
@@ -285,10 +277,7 @@ def check_all_replies(days=7, logger_callback=None):
                             
                 except Exception as e:
                     import traceback
-                    tb = traceback.format_exc()
-                    msg = f"  Error on msg {msg_id}: {e}\n{tb}"
-                    print(msg)
-                    if logger_callback: logger_callback(msg)
+                    traceback.print_exc()
             mail.logout()
         except Exception as e:
             msg = f"  Connection failed for {acct_email}: {e}"
