@@ -9,6 +9,7 @@ google-auth-httplib2==0.2.0
 google-api-python-client==2.111.0
 gunicorn==21.2.0
 google-genai==0.3.0
+google-generativeai
 apify-client>=1.6.0
 dnspython
 camoufox[geoip]

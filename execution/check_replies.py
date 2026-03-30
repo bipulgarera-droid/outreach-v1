@@ -25,8 +25,7 @@ import ssl
 import time
 from datetime import datetime, timedelta
 from email.header import decode_header
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -45,17 +44,14 @@ IMAP_PORT = 993
 
 # Initialize Gemini Client
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-client = None
 if GEMINI_API_KEY:
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    genai.configure(api_key=GEMINI_API_KEY)
 
 
 def analyze_sentiment(text: str) -> tuple[str, float]:
     """Analyze sentiment of an email reply using Gemini."""
-    if not client or not text:
-        return "unknown", 0.0
-    
     try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
         prompt = f"""
         Analyze the sentiment of this cold email reply. 
         Classify it as ONE of: positive, negative, neutral, question, or unsubscribe.
@@ -71,12 +67,9 @@ def analyze_sentiment(text: str) -> tuple[str, float]:
         
         Return ONLY a JSON object: {{"sentiment": "...", "score": 0.0-1.0}}
         """
-        response = client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
-            )
+        response = model.generate_content(
+            prompt,
+            generation_config={"response_mime_type": "application/json"}
         )
         data = json.loads(response.text)
         return data.get("sentiment", "unknown"), data.get("score", 0.0)
