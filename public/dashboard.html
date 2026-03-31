@@ -1010,10 +1010,10 @@
                                             ${sentimentBadge(r.sentiment)}
                                         </td>
                                         <td class="px-5 py-4 max-w-lg">
-                                            <div class="text-gray-400 line-clamp-1 text-[11px] italic mb-1">"${r.body || '(No body)'}"</div>
+                                            <div class="text-gray-400 line-clamp-1 text-[11px] italic mb-1">"${(r.body || '(No body)').replace(/</g, '&lt;').replace(/>/g, '&gt;')}"</div>
                                             ${r.draft_reply ? `
                                                 <div class="text-[10px] text-violet-400 bg-violet-600/10 border border-violet-500/20 px-2 py-1 rounded mt-1 line-clamp-1">
-                                                    <span class="font-bold uppercase tracking-tight mr-1">AI Draft:</span> ${r.draft_reply}
+                                                    <span class="font-bold uppercase tracking-tight mr-1">AI Draft:</span> ${(r.draft_reply || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}
                                                 </div>
                                             ` : ''}
                                         </td>
