@@ -902,7 +902,7 @@ def trigger_manual_verification():
                         all_contacts_data.extend(chunk_res.data)
 
                 if not all_contacts_data:
-                    job['status'] = 'done'
+                    job_in_mem['status'] = 'done'
                     return
 
                 # Filter out contacts with no email upfront, or already verified
@@ -918,12 +918,12 @@ def trigger_manual_verification():
                     v_status = enrichment_data.get('verification_status')
                     
                     if not c.get('email'):
-                        job['done'] += 1
-                        job['skipped'] += 1
+                        job_in_mem['done'] += 1
+                        job_in_mem['skipped'] += 1
                     elif v_status and not force:
                         # Skip if it already has ANY verification status (valid, invalid, risky, etc.)
-                        job['done'] += 1
-                        job['skipped'] += 1
+                        job_in_mem['done'] += 1
+                        job_in_mem['skipped'] += 1
                     else:
                         to_verify.append(c)
 
