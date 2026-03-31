@@ -46,13 +46,13 @@ def analyze_incoming_emails(emails_batch: list[dict], active_campaign_subjects: 
     You MUST output ONLY a valid JSON array of objects. Do not include markdown blocks like ```json.
     Format:
     [
-      {
+      {{
         "msg_index": "the index provided in the input",
         "classification": "HUMAN_REPLY | BOUNCE | AUTO_REPLY | SPAM",
         "reason": "1 sentence explaining why",
         "extracted_contact_email": "If BOUNCE, try to find the email address that failed in the body. If HUMAN_REPLY, try to find the original recipient email in the quoted text. If not found, leave null.",
         "extracted_subject": "If replying to one of our active campaigns, output the matched subject line exactly as given."
-      }
+      }}
     ]
 
     INCOMING EMAILS BATCH:
