@@ -33,9 +33,12 @@ def _extract_plain_text_snippet(full_msg) -> str:
     body = ""
     if full_msg.is_multipart():
         for part in full_msg.walk():
-            if part.get_content_type() == "text/plain":
+            ctype = part.get_content_type()
+            if ctype == "text/plain":
                 p = part.get_payload(decode=True)
-                if p: body += p.decode(errors='ignore')
+                if p: body += p.decode(errors='ignore') + "\n"
+            elif ctype in ["message/delivery-status", "message/rfc822"]:
+                body += str(part) + "\n"
     else:
         p = full_msg.get_payload(decode=True)
         if p: body = p.decode(errors='ignore')

@@ -25,6 +25,7 @@ MOCK_PROSPECT_EMAILS = {
     'julianano@standoutconsultingservices.com': ('c15', 'p3', 'Stand Out Consulting'),
     'jcrouch@relentless-digital.com': ('c16', 'p3', 'Relentless Digital'),
     'education@cineworks.ca': ('c17', 'p1', 'Cineworks'),
+    'john@deadcompany.com': ('c18', 'p1', 'Dead Company'),
 }
 
 MOCK_SUBJECT_MAP = {
