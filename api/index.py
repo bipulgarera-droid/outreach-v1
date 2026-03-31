@@ -939,6 +939,11 @@ def trigger_manual_verification():
 
                 # Run up to 20 verifications concurrently (SMTP is I/O-bound, threads help a lot)
                 MAX_WORKERS = 20
+                
+                valid_count = 0
+                skipped_count = 0
+                done_count = 0
+                
                 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                     futures = {executor.submit(verify_one, c): c for c in to_verify}
                     for future in as_completed(futures):
@@ -951,24 +956,21 @@ def trigger_manual_verification():
                                     'status': 'skipped',
                                     'enrichment_data': enrichment_data
                                 }).eq('id', contact_id).execute()
-                                job['skipped'] += 1
+                                skipped_count += 1
                             else:
-                                job['valid'] += 1
+                                valid_count += 1
                                 job.info(f"Verified {email}: VALID")
                         except Exception as e:
                             logger.error(f"Verification worker error: {e}")
-                            job['skipped'] += 1
+                            skipped_count += 1
                         finally:
-                            job['done'] += 1
+                            done_count += 1
 
-                job['status'] = 'done'
-                job.success(f"Verification complete. Valid: {job['valid']}, Skipped: {job['skipped']}")
+                job.success(f"Verification complete. Valid: {valid_count}, Skipped: {skipped_count}")
                 job.complete('completed')
 
             except Exception as e:
                 logger.error(f"Background verification failed: {e}")
-                job['status'] = 'error'
-                job['error'] = str(e)
                 job.error(f"Verification failed: {e}")
                 job.complete('failed')
 
