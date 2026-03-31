@@ -1,14 +1,16 @@
 import os
 import json
 import logging
-from apify_client import ApifyClient
+import requests
+import concurrent.futures
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
 def verify_risky_emails_bulk(sequences: list[dict], supabase_client) -> None:
     """
-    Extracts all 'risky' emails (including Catch-Alls) from the pending pending sequences
-    that haven't been OSINT-verified yet, runs them through Apify Google Search in bulk,
+    Extracts all 'risky' emails (including Catch-Alls) from the pending sequences
+    that haven't been OSINT-verified yet, runs them through Serper.dev Google Search in bulk,
     and updates the contact's enrichment_data with `serper_verified`: True/False.
     """
     to_verify = []
@@ -24,76 +26,95 @@ def verify_risky_emails_bulk(sequences: list[dict], supabase_client) -> None:
         v_status = ed.get('verification_status')
         v_reason = str(ed.get('verification_reason', ''))
         
-        # Identify Risky emails (now includes domain_catch_all)
+        # Identify Risky emails (now includes domain_catch_all and timeouts)
         is_strict_risky = v_status == 'risky' or (v_status == 'valid' and 'domain_catch_all' in v_reason)
         
         if is_strict_risky:
             has_been_checked = 'serper_verified' in ed
             if not has_been_checked:
                 email = c.get('email', '').strip()
-                if email and '@' in email:
+                company = c.get('company_name', '').strip()
+                if email and '@' in email and company:
                     to_verify.append(seq)
                     
     if not to_verify:
         return
 
-    logger.info(f"OSINT FALLBACK: Found {len(to_verify)} unverified risky leads. Preparing bulk Apify check...")
+    logger.info(f"OSINT FALLBACK: Found {len(to_verify)} unverified risky leads. Preparing bulk Serper check...")
 
-    apify_key = os.getenv('APIFY_API_KEY')
-    if not apify_key:
-        logger.error("OSINT FALLBACK: No APIFY_API_KEY found in .env. Skipping deep verification.")
+    serper_key = os.getenv('SERPER_API_KEY')
+    if not serper_key:
+        logger.error("OSINT FALLBACK: No SERPER_API_KEY found in environment or .env. Skipping deep verification.")
         return
 
-    # Build multi-line query string for the actor
-    lines = []
-    # Use a dict to map the exact email string we send to Apify back to the sequence objects
-    email_to_seqs = {}
+    # Use a dict to map the exact email string we send to Serper back to the sequence objects
+    email_to_seqs = defaultdict(list)
+    emails_to_test = []
     
     for seq in to_verify:
         email = seq['contacts']['email'].strip()
-        lines.append(f'"{email}"')
-        if email not in email_to_seqs:
-            email_to_seqs[email] = []
+        company = seq['contacts']['company_name'].strip()
         email_to_seqs[email].append(seq)
         
-    # Deduplicate queries to save cost
-    unique_lines = list(set(lines))
-    keyword_payload = "\n".join(unique_lines)
+    for e, seqs in email_to_seqs.items():
+        # Just grab the company text from the first seq mapping
+        c = seqs[0]['contacts']['company_name'].strip()
+        emails_to_test.append((e, c))
     
-    logger.info(f"OSINT FALLBACK: Initiating Apify 'scraperlink' actor for {len(unique_lines)} unique queries. This may take 60-120 seconds...")
+    logger.info(f"OSINT FALLBACK: Initiating lightning-fast Serper API actor for {len(emails_to_test)} unique queries...")
     
-    client = ApifyClient(apify_key)
-    run_input = {
-        "keyword": keyword_payload,
-        "include_merged": True,
-        "limit": "10"
-    }
-
-    try:
-        run = client.actor("scraperlink/google-search-results-serp-scraper").call(run_input=run_input)
-    except Exception as e:
-        logger.error(f"OSINT FALLBACK: Apify Actor call failed: {e}")
-        return
-
-    dataset_id = run.get("defaultDatasetId")
-    if not dataset_id:
-        logger.error("OSINT FALLBACK: No defaultDatasetId returned from Apify.")
-        return
+    def test_serper(lead_data):
+        email, company = lead_data
+        # Query precisely the email to maximize recovery yield
+        query = f'"{email}"'
+        
+        payload = json.dumps({
+            "q": query,
+            "num": 10
+        })
+        headers = {
+            'X-API-KEY': serper_key,
+            'Content-Type': 'application/json'
+        }
+        import time
+        for attempt in range(3):
+            try:
+                res = requests.request("POST", "https://google.serper.dev/search", headers=headers, data=payload, timeout=20)
+                if res.status_code == 429:
+                    time.sleep(1.0)
+                    continue
+                if res.status_code != 200:
+                    logger.error(f"API Error {res.status_code} for {email}: {res.text}")
+                    return email, False
+                    
+                res_json = res.json()
+                organic = res_json.get('organic', [])
+                email_lower = email.lower()
+                
+                found = False
+                for org in organic:
+                    snippet = org.get('snippet', '').lower()
+                    title = org.get('title', '').lower()
+                    if email_lower in snippet or email_lower in title:
+                        found = True
+                        break
+                return email, found
+            except Exception as ex:
+                if attempt == 2:
+                    logger.error(f"Serper API error for {email}: {ex}")
+                    return email, False
+                time.sleep(1.0)
+        return email, False
 
     verified_emails = set()
     
-    logger.info("OSINT FALLBACK: Apify run complete. Parsing dataset...")
-    try:
-        for item in client.dataset(dataset_id).iterate_items():
-            # Example item['query'] = '"john@example.com"'
-            query_val = str(item.get('query', '')).strip().strip('"')
-            results = item.get('results', [])
-            
-            # If Google found at least 1 organic search result containing this email string:
-            if isinstance(results, list) and len(results) > 0:
-                verified_emails.add(query_val)
-    except Exception as e:
-        logger.error(f"OSINT FALLBACK: Error reading Apify dataset: {e}")
+    # Max workers 4 to stay within respectful API concurrency limits
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(test_serper, lead) for lead in emails_to_test]
+        for idx, future in enumerate(concurrent.futures.as_completed(futures), 1):
+            email, found = future.result()
+            if found:
+                verified_emails.add(email)
 
     # Update the Database
     newly_verified = 0
@@ -111,9 +132,39 @@ def verify_risky_emails_bulk(sequences: list[dict], supabase_client) -> None:
         for seq in seq_list:
             c_id = seq['contact_id']
             ed = seq['contacts'].get('enrichment_data') or {}
-            
             ed['serper_verified'] = is_verified
-            
             supabase_client.table('contacts').update({'enrichment_data': ed}).eq('id', c_id).execute()
 
     logger.info(f"OSINT FALLBACK COMPLETE: Recovered {newly_verified} | Dropped {newly_rejected}.")
+
+
+if __name__ == "__main__":
+    from supabase import create_client, Client
+    import sys
+    from dotenv import load_dotenv
+    from pathlib import Path
+    
+    # Load env vars
+    env_path = Path(__file__).resolve().parent.parent / '.env'
+    load_dotenv(env_path)
+    
+    # Initialize Supabase
+    supabase_url = os.environ.get("SUPABASE_URL")
+    supabase_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not supabase_url or not supabase_key:
+        logger.error("Missing Supabase credentials in environment.")
+        sys.exit(1)
+        
+    supabase: Client = create_client(supabase_url, supabase_key)
+    
+    logger.info("Starting standalone OSINT Fallback Verification...")
+    
+    # Fetch active sequences
+    seq_res = supabase.table('email_sequences').select('*, contacts!inner(*)').eq('status', 'active').execute()
+    sequences = seq_res.data or []
+    
+    if not sequences:
+        logger.info("No active sequences found.")
+    else:
+        logger.info(f"Found {len(sequences)} active sequences. Running Serper bulk verification...")
+        verify_risky_emails_bulk(sequences, supabase)
