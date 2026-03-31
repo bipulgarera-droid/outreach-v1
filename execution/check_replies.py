@@ -105,10 +105,13 @@ def check_all_replies(days=7, logger_callback=None, skip_db_update=False):
         page += 1
     
     prospect_emails = {}  # email -> (contact_id, project_id, company)
+    cid_info = {}         # contact_id -> (email, company)
     for c in all_contacts:
         email_val = (c.get('email') or '').lower().strip()
+        comp_val = c.get('company') or 'Unknown'
+        cid_info[c['id']] = (email_val, comp_val)
         if email_val:
-            prospect_emails[email_val] = (c['id'], c['project_id'], c.get('company', 'Unknown'))
+            prospect_emails[email_val] = (c['id'], c['project_id'], comp_val)
             
     # Active subject map (campaign subjects -> contact mappings)
     subject_map = {}  # base_subject -> [(contact_id, project_id)]
@@ -122,7 +125,10 @@ def check_all_replies(days=7, logger_callback=None, skip_db_update=False):
             if subj:
                 if subj not in subject_map:
                     subject_map[subj] = []
-                subject_map[subj].append((s['contact_id'], s['project_id']))
+                # Store (contact_id, project_id, email, company)
+                cid = s['contact_id']
+                em, comp = cid_info.get(cid, ('Unknown', 'Unknown'))
+                subject_map[subj].append((cid, s['project_id'], em, comp))
         if len(seq_page.data) < page_size:
             break
         page += 1
@@ -226,7 +232,6 @@ def check_all_replies(days=7, logger_callback=None, skip_db_update=False):
                                         'subject': subject_hdr[:200],
                                         'body': body_snippet[:2000],
                                         'sentiment': 'bounce',
-                                        'reply_status': 'closed',
                                         'received_at': datetime.now().isoformat()
                                     }).execute()
                                 except Exception as insert_err:
@@ -253,7 +258,6 @@ def check_all_replies(days=7, logger_callback=None, skip_db_update=False):
                                         'subject': subject_hdr[:200],
                                         'body': body_snippet[:2000],
                                         'sentiment': 'neutral',
-                                        'reply_status': 'needs_review',
                                         'received_at': datetime.now().isoformat()
                                     }).execute()
                                 except Exception as insert_err:
@@ -276,7 +280,6 @@ def check_all_replies(days=7, logger_callback=None, skip_db_update=False):
                                         'subject': subject_hdr[:200],
                                         'body': body_snippet[:2000],
                                         'sentiment': 'neutral',
-                                        'reply_status': 'closed',
                                         'received_at': datetime.now().isoformat()
                                     }).execute()
                                 except Exception as insert_err:
