@@ -905,8 +905,10 @@ def trigger_manual_verification():
                     job_in_mem['status'] = 'done'
                     return
 
-                # Filter out contacts with no email upfront, or already verified
+                # Filter out contacts with no email
+                # Smart caching: trust existing VALID results unless force=True
                 to_verify = []
+                already_valid = 0
                 for c in all_contacts_data:
                     enrichment_data = c.get('enrichment_data') or {}
                     if isinstance(enrichment_data, str):
@@ -920,8 +922,16 @@ def trigger_manual_verification():
                     if not c.get('email'):
                         job_in_mem['done'] += 1
                         job_in_mem['skipped'] += 1
+                    elif v_status == 'valid' and not force:
+                        # Trust cached VALID result — don't re-probe from Railway's IP
+                        already_valid += 1
+                        job_in_mem['done'] += 1
                     else:
+                        # No status, risky, invalid, or force=True → re-verify
                         to_verify.append(c)
+                
+                if already_valid > 0:
+                    job.info(f"Skipping {already_valid} already-VALID contacts (use force=True to re-verify)")
 
                 def verify_one(c):
                     email = c['email']
