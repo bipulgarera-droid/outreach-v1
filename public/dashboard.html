@@ -1565,8 +1565,8 @@
                                             try {
                                                 const ed = typeof c.enrichment_data === 'string' ? JSON.parse(c.enrichment_data) : (c.enrichment_data || {});
                                                 if (ed.company_context) {
-                                                    const ctxString = encodeURIComponent(JSON.stringify(ed.company_context));
-                                                    const compString = encodeURIComponent(c.company || '');
+                                                    const ctxString = encodeURIComponent(JSON.stringify(ed.company_context)).replace(/'/g, "%27");
+                                                    const compString = encodeURIComponent(c.company || '').replace(/'/g, "%27");
                                                     return `<button onclick="showCompanyContextModal('${compString}', '${ctxString}')" class="text-xs bg-fuchsia-500/20 text-fuchsia-400 border border-fuchsia-500/50 px-2 py-1 rounded hover:bg-fuchsia-500/30 font-medium">View</button>`;
                                                 }
                                                 return '<span class="text-gray-600 text-xs">—</span>';
