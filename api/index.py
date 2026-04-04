@@ -2316,6 +2316,12 @@ def import_leads():
         if not project_check.data:
             return jsonify({'error': f'Project {project_id} not found'}), 404
         
+        # Clean up existing empty-email rows (convert '' to NULL so unique constraint doesn't block)
+        try:
+            supabase.table('contacts').update({'email': None}).eq('project_id', project_id).eq('email', '').execute()
+        except Exception:
+            pass  # Non-critical cleanup
+        
         # Fetch existing contacts in this project for comprehensive deduplication
         existing = supabase.table('contacts').select('name, email, linkedin_url, enrichment_data').eq('project_id', project_id).execute()
         existing_emails = set()
@@ -2420,7 +2426,7 @@ def import_leads():
             contact = {
                 'project_id': project_id,
                 'name': clean_name if clean_name else lead.get('name', 'Unknown'),
-                'email': email,
+                'email': email or None,
                 'bio': lead.get('bio', ''),
                 'linkedin_url': lead.get('linkedin') or None,
                 'instagram': lead.get('instagram') or None,
