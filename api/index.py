@@ -1487,11 +1487,12 @@ EMAIL_1 RULES:
 Use the company context to craft a personalized opening, but seamlessly integrate it with the original offer. Follow this flow:
 IMPORTANT: Work BACKWARDS from the offer. First, identify the core problem that the original email's offer solves (e.g. "repetitive SEO fulfillment eating up time"). Then scan the 4 context points and pick the ONE that most strongly implies the prospect would face that exact problem (e.g. if they manage marketing for many clients, that implies heavy fulfillment load). Ignore context points that are interesting but unrelated to the problem your offer solves.
 
-1. The Observation: Confidently state the chosen context detail so they know you researched them. Do NOT reuse the original opening line. CRITICAL: Do NOT use tentative phrasing like "Looks like" or "It seems". CRITICAL: The names mentioned in the scraped context are likely the founders/recipients! Do NOT refer to them in the third person as if they are customers.
+1. The Observation: Confidently state the chosen context detail so they know you researched them. It MUST be a specific, concrete fact (e.g. "offers 12 marketing campaigns per year", "manages fulfillment for 200+ clients"). BAD EXAMPLES (DO NOT WRITE THESE): "helps operators free up time", "is all about giving people time back", "focuses on helping businesses grow". These are vague summaries, not observations. Do NOT reuse the original opening line. Do NOT use tentative phrasing like "Looks like" or "It seems". The names mentioned in the scraped context are likely the founders/recipients, do NOT refer to them in the third person.
 2. The Bridge: Write exactly one sentence that connects their specific situation to the problem your offer solves. The reader should think "yeah, that IS my problem" before they even see the offer. DO NOT use em-dashes.
 3. The Offer & Proof: Naturally weave in the original core offer and proof statements. Do NOT change the core value proposition, numbers, or factual claims. IMPORTANT: If the original email mentions a specific client or case study name (e.g. "RankJacker"), keep that name in the output.
 4. The CTA: Keep the final Call to Action essentially identical to the original.
-5. Keep the total output for EMAIL_1 strictly under 75-100 words. No fluff. No corporate speak.
+5. The Sign-off: If the original email ends with a sign-off (e.g. "Best,\nBipul"), you MUST keep it exactly as-is.
+6. Keep the total output for EMAIL_1 strictly under 75-100 words. No fluff. No corporate speak.
 
 For EMAIL_2 onwards, just do the standard paraphrasing as normal."""
 
@@ -1504,6 +1505,7 @@ Return ONLY the raw JSON array. No markdown, no explanation."""
         response = client.models.generate_content(
             model='gemini-2.0-flash',
             contents=system + "\n\nEmails to paraphrase:\n" + numbered_input,
+            config={'temperature': 0.2},
         )
         # Strip markdown emphasis symbols at the code level so they physically cannot survive
         content = response.text.strip().replace('*', '').replace('_', '')
