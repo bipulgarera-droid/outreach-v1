@@ -1792,7 +1792,7 @@
                     category: 'manual'
                 }));
 
-                const res = await apiFetch('/api/leads/import', {
+                const res = await apiFetch('/api/import-leads', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ project_id: currentProjectId, leads })
@@ -1861,7 +1861,7 @@
                     location: r.location || '',
                 }));
 
-                const res = await apiFetch('/api/leads/import', {
+                const res = await apiFetch('/api/import-leads', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ project_id: currentProjectId, leads })
