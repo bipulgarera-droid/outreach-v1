@@ -1489,7 +1489,7 @@ IMPORTANT: Work BACKWARDS from the offer. First, identify the core problem that 
 
 1. The Observation: Confidently state the chosen context detail so they know you researched them. Do NOT reuse the original opening line. CRITICAL: Do NOT use tentative phrasing like "Looks like" or "It seems". CRITICAL: The names mentioned in the scraped context are likely the founders/recipients! Do NOT refer to them in the third person as if they are customers.
 2. The Bridge: Write exactly one sentence that connects their specific situation to the problem your offer solves. The reader should think "yeah, that IS my problem" before they even see the offer. DO NOT use em-dashes.
-3. The Offer & Proof: Naturally weave in the original core offer and proof statements. Do NOT change the core value proposition, numbers, or factual claims.
+3. The Offer & Proof: Naturally weave in the original core offer and proof statements. Do NOT change the core value proposition, numbers, or factual claims. IMPORTANT: If the original email mentions a specific client or case study name (e.g. "RankJacker"), keep that name in the output.
 4. The CTA: Keep the final Call to Action essentially identical to the original.
 5. Keep the total output for EMAIL_1 strictly under 75-100 words. No fluff. No corporate speak.
 
