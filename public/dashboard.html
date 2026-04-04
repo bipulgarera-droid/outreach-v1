@@ -1489,6 +1489,9 @@
 
             actions.innerHTML = `
                 <div class="flex items-center gap-2">
+                    <button onclick="showAddContactModal()" class="bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 shadow-lg transition-all">
+                        <i data-lucide="plus" class="w-3.5 h-3.5"></i> Add Contact
+                    </button>
                     <input type="text" id="contactSearch" placeholder="Search contacts..." oninput="filterContacts()" 
                         class="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-3 py-1.5 w-48 focus:border-violet-500 focus:outline-none">
                     <button onclick="runCompanyEnrichment()" class="bg-fuchsia-500/20 text-fuchsia-400 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 hover:bg-fuchsia-500/30" title="Scrape company websites using Jina and extract 4-pillar data via Gemini">
@@ -1620,6 +1623,259 @@
                     </table>
                 </div>
             `;
+        }
+
+        // ── Add Contact Modal ───────────────────────────────────────────────
+        function showAddContactModal() {
+            openModal(`
+                <div class="p-6 max-w-2xl mx-auto">
+                    <h2 class="text-xl font-black text-white mb-4 tracking-tight">Add Contacts</h2>
+                    <div class="flex gap-1 mb-5 border-b border-gray-800 pb-1">
+                        <button onclick="switchAddTab('single')" id="addTab-single" class="px-4 py-2 text-xs font-bold uppercase tracking-widest rounded-t-lg transition-all text-violet-400 bg-violet-500/10 border-b-2 border-violet-500">Single</button>
+                        <button onclick="switchAddTab('bulk')" id="addTab-bulk" class="px-4 py-2 text-xs font-bold uppercase tracking-widest rounded-t-lg transition-all text-gray-500 hover:text-gray-300">Bulk Paste</button>
+                        <button onclick="switchAddTab('csv')" id="addTab-csv" class="px-4 py-2 text-xs font-bold uppercase tracking-widest rounded-t-lg transition-all text-gray-500 hover:text-gray-300">CSV Upload</button>
+                    </div>
+
+                    <!-- SINGLE ENTRY -->
+                    <div id="addPanel-single">
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="text-[10px] text-gray-500 uppercase font-bold tracking-widest mb-1 block">Name</label>
+                                <input id="mc-name" class="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:border-violet-500 outline-none" placeholder="John Smith">
+                            </div>
+                            <div>
+                                <label class="text-[10px] text-gray-500 uppercase font-bold tracking-widest mb-1 block">Company *</label>
+                                <input id="mc-company" class="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:border-violet-500 outline-none" placeholder="Acme Corp">
+                            </div>
+                            <div>
+                                <label class="text-[10px] text-gray-500 uppercase font-bold tracking-widest mb-1 block">Email</label>
+                                <input id="mc-email" type="email" class="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:border-violet-500 outline-none" placeholder="john@acme.com">
+                            </div>
+                            <div>
+                                <label class="text-[10px] text-gray-500 uppercase font-bold tracking-widest mb-1 block">Phone</label>
+                                <input id="mc-phone" class="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:border-violet-500 outline-none" placeholder="+1 555 123 4567">
+                            </div>
+                            <div>
+                                <label class="text-[10px] text-gray-500 uppercase font-bold tracking-widest mb-1 block">Website</label>
+                                <input id="mc-website" class="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:border-violet-500 outline-none" placeholder="acme.com">
+                            </div>
+                            <div>
+                                <label class="text-[10px] text-gray-500 uppercase font-bold tracking-widest mb-1 block">LinkedIn</label>
+                                <input id="mc-linkedin" class="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:border-violet-500 outline-none" placeholder="linkedin.com/in/john">
+                            </div>
+                            <div>
+                                <label class="text-[10px] text-gray-500 uppercase font-bold tracking-widest mb-1 block">Instagram</label>
+                                <input id="mc-instagram" class="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:border-violet-500 outline-none" placeholder="@johndoe">
+                            </div>
+                            <div>
+                                <label class="text-[10px] text-gray-500 uppercase font-bold tracking-widest mb-1 block">Niche / Industry</label>
+                                <input id="mc-niche" class="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:border-violet-500 outline-none" placeholder="Marketing Agency">
+                            </div>
+                            <div class="col-span-2">
+                                <label class="text-[10px] text-gray-500 uppercase font-bold tracking-widest mb-1 block">Location</label>
+                                <input id="mc-location" class="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:border-violet-500 outline-none" placeholder="New York, USA">
+                            </div>
+                            <div class="col-span-2">
+                                <label class="text-[10px] text-gray-500 uppercase font-bold tracking-widest mb-1 block">Bio / Notes</label>
+                                <textarea id="mc-bio" rows="2" class="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:border-violet-500 outline-none resize-none" placeholder="Short description..."></textarea>
+                            </div>
+                        </div>
+                        <div class="flex gap-3 mt-5">
+                            <button onclick="closeModal()" class="px-5 py-2.5 bg-gray-800 hover:bg-gray-700 text-white text-xs font-bold uppercase tracking-widest rounded-xl transition-all">Cancel</button>
+                            <button onclick="submitManualContact()" id="btnSubmitContact" class="flex-1 bg-gradient-to-br from-violet-600 to-indigo-700 hover:from-violet-500 hover:to-indigo-600 text-white text-xs font-bold uppercase tracking-widest py-2.5 rounded-xl transition-all shadow-xl shadow-violet-900/30 flex items-center justify-center gap-2">
+                                <i data-lucide="plus" class="w-4 h-4"></i> Add Contact
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- BULK PASTE -->
+                    <div id="addPanel-bulk" class="hidden">
+                        <p class="text-xs text-gray-400 mb-3">Paste company names below, one per line. Each line creates a new contact row.</p>
+                        <textarea id="bulk-companies" rows="10" class="w-full bg-gray-950 border-2 border-gray-800 rounded-xl px-4 py-3 text-sm text-white font-mono outline-none focus:border-violet-600 transition-all resize-none" placeholder="Acme Corp&#10;Limo U&#10;RankJacker&#10;Digital Marketing Pro&#10;..."></textarea>
+                        <div class="flex gap-3 mt-4">
+                            <button onclick="closeModal()" class="px-5 py-2.5 bg-gray-800 hover:bg-gray-700 text-white text-xs font-bold uppercase tracking-widest rounded-xl transition-all">Cancel</button>
+                            <button onclick="submitBulkCompanies()" id="btnBulkSubmit" class="flex-1 bg-gradient-to-br from-emerald-600 to-teal-700 hover:from-emerald-500 hover:to-teal-600 text-white text-xs font-bold uppercase tracking-widest py-2.5 rounded-xl transition-all shadow-xl shadow-emerald-900/30 flex items-center justify-center gap-2">
+                                <i data-lucide="layers" class="w-4 h-4"></i> Add All
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- CSV UPLOAD -->
+                    <div id="addPanel-csv" class="hidden">
+                        <p class="text-xs text-gray-400 mb-3">Upload a CSV with headers matching: <span class="text-violet-400 font-mono">name, company, email, phone, website, linkedin, instagram, niche, location</span></p>
+                        <div class="border-2 border-dashed border-gray-700 rounded-xl p-8 text-center hover:border-violet-500 transition-colors cursor-pointer" onclick="document.getElementById('csvFileInput').click()">
+                            <i data-lucide="upload-cloud" class="w-8 h-8 text-gray-600 mx-auto mb-2"></i>
+                            <p class="text-sm text-gray-500">Click to select CSV file</p>
+                            <input type="file" id="csvFileInput" accept=".csv" class="hidden" onchange="previewCSV(this)">
+                        </div>
+                        <div id="csvPreview" class="hidden mt-4 max-h-[200px] overflow-auto rounded-lg border border-gray-800"></div>
+                        <div class="flex gap-3 mt-4">
+                            <button onclick="closeModal()" class="px-5 py-2.5 bg-gray-800 hover:bg-gray-700 text-white text-xs font-bold uppercase tracking-widest rounded-xl transition-all">Cancel</button>
+                            <button onclick="submitCSVContacts()" id="btnCSVSubmit" class="hidden flex-1 bg-gradient-to-br from-sky-600 to-blue-700 hover:from-sky-500 hover:to-blue-600 text-white text-xs font-bold uppercase tracking-widest py-2.5 rounded-xl transition-all shadow-xl shadow-sky-900/30 flex items-center justify-center gap-2">
+                                <i data-lucide="file-up" class="w-4 h-4"></i> Import CSV
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `);
+            lucide.createIcons();
+        }
+
+        function switchAddTab(tab) {
+            ['single', 'bulk', 'csv'].forEach(t => {
+                const panel = document.getElementById('addPanel-' + t);
+                const btn = document.getElementById('addTab-' + t);
+                if (t === tab) {
+                    panel.classList.remove('hidden');
+                    btn.className = 'px-4 py-2 text-xs font-bold uppercase tracking-widest rounded-t-lg transition-all text-violet-400 bg-violet-500/10 border-b-2 border-violet-500';
+                } else {
+                    panel.classList.add('hidden');
+                    btn.className = 'px-4 py-2 text-xs font-bold uppercase tracking-widest rounded-t-lg transition-all text-gray-500 hover:text-gray-300';
+                }
+            });
+        }
+
+        async function submitManualContact() {
+            const btn = document.getElementById('btnSubmitContact');
+            const company = document.getElementById('mc-company').value.trim();
+            if (!company) return alert('Company name is required');
+
+            btn.disabled = true; btn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Adding...'; lucide.createIcons();
+
+            try {
+                const payload = {
+                    project_id: projectId,
+                    name: document.getElementById('mc-name').value.trim() || company,
+                    company,
+                    email: document.getElementById('mc-email').value.trim(),
+                    phone: document.getElementById('mc-phone').value.trim(),
+                    website: document.getElementById('mc-website').value.trim(),
+                    linkedin_url: document.getElementById('mc-linkedin').value.trim(),
+                    instagram: document.getElementById('mc-instagram').value.trim(),
+                    niche: document.getElementById('mc-niche').value.trim(),
+                    location: document.getElementById('mc-location').value.trim(),
+                    bio: document.getElementById('mc-bio').value.trim(),
+                };
+
+                const res = await apiFetch('/api/contacts/add?project_id=' + projectId, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (data.error) throw new Error(data.error);
+
+                showToast('✅ Contact added!');
+                closeModal();
+                loadContent();
+            } catch (e) {
+                alert('Error: ' + e.message);
+                btn.disabled = false; btn.innerHTML = '<i data-lucide="plus" class="w-4 h-4"></i> Add Contact'; lucide.createIcons();
+            }
+        }
+
+        async function submitBulkCompanies() {
+            const text = document.getElementById('bulk-companies').value.trim();
+            if (!text) return alert('Paste at least one company name');
+
+            const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+            if (!lines.length) return alert('No valid lines found');
+
+            const btn = document.getElementById('btnBulkSubmit');
+            btn.disabled = true; btn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Adding ' + lines.length + '...'; lucide.createIcons();
+
+            try {
+                const leads = lines.map(company => ({
+                    name: company,
+                    company,
+                    email: '',
+                    category: 'manual'
+                }));
+
+                const res = await apiFetch('/api/leads/import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ project_id: projectId, leads })
+                });
+                const data = await res.json();
+                if (data.error) throw new Error(data.error);
+
+                showToast('✅ Added ' + data.imported + ' contacts (' + data.skipped + ' skipped)');
+                closeModal();
+                loadContent();
+            } catch (e) {
+                alert('Error: ' + e.message);
+                btn.disabled = false; btn.innerHTML = '<i data-lucide="layers" class="w-4 h-4"></i> Add All'; lucide.createIcons();
+            }
+        }
+
+        let _csvParsedRows = [];
+        function previewCSV(input) {
+            const file = input.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const lines = e.target.result.split('\n').filter(l => l.trim());
+                if (lines.length < 2) return alert('CSV must have a header row and at least one data row');
+
+                const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/['"]/g, ''));
+                _csvParsedRows = [];
+                for (let i = 1; i < lines.length; i++) {
+                    const vals = lines[i].split(',').map(v => v.trim().replace(/^['"]|['"]$/g, ''));
+                    const row = {};
+                    headers.forEach((h, idx) => { row[h] = vals[idx] || ''; });
+                    _csvParsedRows.push(row);
+                }
+
+                const preview = document.getElementById('csvPreview');
+                preview.classList.remove('hidden');
+                preview.innerHTML = '<table class="w-full text-xs"><thead><tr class="bg-gray-900 text-gray-400">' +
+                    headers.map(h => '<th class="px-3 py-2 text-left">' + h + '</th>').join('') +
+                    '</tr></thead><tbody class="divide-y divide-gray-800">' +
+                    _csvParsedRows.slice(0, 5).map(r => '<tr class="text-gray-300">' + headers.map(h => '<td class="px-3 py-1.5">' + (r[h] || '—') + '</td>').join('') + '</tr>').join('') +
+                    (_csvParsedRows.length > 5 ? '<tr><td colspan="' + headers.length + '" class="px-3 py-2 text-gray-500 text-center">... and ' + (_csvParsedRows.length - 5) + ' more rows</td></tr>' : '') +
+                    '</tbody></table>';
+
+                document.getElementById('btnCSVSubmit').classList.remove('hidden');
+                document.getElementById('btnCSVSubmit').style.display = 'flex';
+            };
+            reader.readAsText(file);
+        }
+
+        async function submitCSVContacts() {
+            if (!_csvParsedRows.length) return alert('No CSV data to import');
+
+            const btn = document.getElementById('btnCSVSubmit');
+            btn.disabled = true; btn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Importing...'; lucide.createIcons();
+
+            try {
+                const leads = _csvParsedRows.map(r => ({
+                    name: r.name || r.company || 'Unknown',
+                    company: r.company || '',
+                    email: r.email || '',
+                    phone: r.phone || '',
+                    website: r.website || '',
+                    linkedin: r.linkedin || r.linkedin_url || '',
+                    instagram: r.instagram || '',
+                    category: r.niche || r.industry || r.category || 'csv-import',
+                    location: r.location || '',
+                }));
+
+                const res = await apiFetch('/api/leads/import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ project_id: projectId, leads })
+                });
+                const data = await res.json();
+                if (data.error) throw new Error(data.error);
+
+                showToast('✅ Imported ' + data.imported + ' contacts (' + data.skipped + ' skipped)');
+                closeModal();
+                loadContent();
+            } catch (e) {
+                alert('Error: ' + e.message);
+                btn.disabled = false; btn.innerHTML = '<i data-lucide="file-up" class="w-4 h-4"></i> Import CSV'; lucide.createIcons();
+            }
         }
 
         function filterContacts() {

@@ -502,6 +502,66 @@ def update_contact(contact_id):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/contacts/add', methods=['POST'])
+def add_contact_manual():
+    """Manually add a single contact."""
+    try:
+        data = request.json
+        project_id = request.args.get('project_id') or data.get('project_id')
+        if not project_id:
+            return jsonify({'error': 'project_id required'}), 400
+
+        name = (data.get('name') or '').strip()
+        email = (data.get('email') or '').strip().rstrip('.,;:)!% ]').strip()
+        linkedin_url = (data.get('linkedin_url') or '').strip()
+
+        if not name and not email:
+            return jsonify({'error': 'At least a name or email is required'}), 400
+
+        # Dedup check
+        existing = supabase.table('contacts').select('id, name, email, linkedin_url').eq('project_id', project_id).execute()
+        for row in (existing.data or []):
+            if email and row.get('email') and row['email'].lower() == email.lower():
+                return jsonify({'error': f'A contact with email {email} already exists'}), 409
+            if linkedin_url and row.get('linkedin_url') and row['linkedin_url'].lower().rstrip('/') == linkedin_url.lower().rstrip('/'):
+                return jsonify({'error': f'A contact with that LinkedIn URL already exists'}), 409
+
+        # Build enrichment_data
+        enrichment = {}
+        if data.get('company'):
+            enrichment['company'] = data['company']
+        if data.get('website'):
+            enrichment['website'] = data['website']
+        if data.get('phone'):
+            enrichment['phone'] = data['phone']
+        if data.get('location'):
+            enrichment['location'] = data['location']
+        if data.get('niche'):
+            enrichment['niche'] = data['niche']
+        enrichment['source_app'] = 'manual'
+
+        contact = {
+            'project_id': project_id,
+            'name': name or 'Unknown',
+            'email': email or None,
+            'bio': (data.get('bio') or '').strip() or None,
+            'linkedin_url': linkedin_url or None,
+            'instagram': (data.get('instagram') or '').strip() or None,
+            'source': data.get('niche') or 'manual',
+            'status': 'enriched' if email else 'new',
+            'location': (data.get('location') or '').strip() or None,
+            'niche': (data.get('niche') or '').strip() or None,
+            'company': (data.get('company') or '').strip() or None,
+            'enrichment_data': enrichment,
+        }
+
+        result = supabase.table('contacts').insert(contact).execute()
+        return jsonify({'contact': result.data[0] if result.data else None, 'message': 'Contact added successfully'})
+    except Exception as e:
+        logger.error(f"Add contact error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/contacts/<contact_id>', methods=['DELETE'])
 def delete_contact(contact_id):
     """Delete a contact."""
@@ -2294,8 +2354,8 @@ def import_leads():
             linkedin = (lead.get('linkedin') or '').strip().lower().rstrip('/')
             website = (lead.get('website') or '').strip().lower().rstrip('/')
             
-            # Skip if no email AND no phone AND no instagram AND no linkedin — truly no way to reach them
-            if not email and not lead.get('phone') and not lead.get('instagram') and not linkedin:
+            # Skip if no email AND no phone AND no instagram AND no linkedin AND no name — truly no way to reach or identify them
+            if not email and not lead.get('phone') and not lead.get('instagram') and not linkedin and not name:
                 skipped_no_contact += 1
                 continue
             
