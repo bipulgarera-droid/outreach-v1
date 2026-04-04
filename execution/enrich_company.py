@@ -61,11 +61,16 @@ def extract_company_context(markdown_text: str) -> Optional[Dict]:
         return None
 
     system_instruction = """
-Analyze the following company data and extract only verifiable information from the text.
-Do not fabricate or infer missing details. If specific details are missing, state "Not mentioned in the text."
+Analyze the following company website text.
+
+CRITICAL FIRST STEP: Check if this text represents a "parked domain", "domain for sale", "under construction", or error/empty page. If there is NO real active business described, you MUST return exactly this JSON and nothing else:
+{"is_valid_business": false}
+
+If it IS an active business, extract only verifiable information from the text. Do not fabricate or infer missing details. If specific details are missing, state "Not mentioned in the text."
 
 Output a clean JSON object exactly matching this structure, with NO markdown formatting outside of the JSON block (just raw '{...}'):
 {
+  "is_valid_business": true,
   "mission_and_about": "Company History, Mission Statement, Vision, Core Values",
   "offerings_and_positioning": "Core Products & Services, Differentiators, Target Customers",
   "process_and_differentiation": "Company Methodology, Step-by-Step Process, Unique Value Proposition",
@@ -87,7 +92,16 @@ Output a clean JSON object exactly matching this structure, with NO markdown for
             content = content.split('```')[1].split('```')[0].strip()
             
         data = json.loads(content)
-        return dict(data)
+        if data.get("is_valid_business") is False:
+            logger.warning("    Domain appears to be parked, for sale, or inactive.")
+            return None
+            
+        return {
+            "mission_and_about": data.get("mission_and_about", ""),
+            "offerings_and_positioning": data.get("offerings_and_positioning", ""),
+            "process_and_differentiation": data.get("process_and_differentiation", ""),
+            "proof_of_success": data.get("proof_of_success", "")
+        }
     except Exception as e:
         logger.error(f"    Gemini extraction error: {e}")
         return None
