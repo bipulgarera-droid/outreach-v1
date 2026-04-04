@@ -88,8 +88,19 @@ def store_apify_results(results: list[dict], query_label: str, project_id: str =
     existing_emails = set()
     existing_linkedin = set()
     if project_id:
-        res = supabase.table('contacts').select('email, linkedin_url').eq('project_id', project_id).execute()
-        for r in res.data:
+        # Proper pagination to fetch ALL current leads in this project for deduplication
+        all_data = []
+        offset = 0
+        while True:
+            res = supabase.table('contacts').select('email, linkedin_url').eq('project_id', project_id).range(offset, offset + 999).execute()
+            if not res.data:
+                break
+            all_data.extend(res.data)
+            if len(res.data) < 1000:
+                break
+            offset += 1000
+            
+        for r in all_data:
             if r.get('email'): existing_emails.add(r['email'].lower())
             if r.get('linkedin_url'): existing_linkedin.add(r['linkedin_url'].lower())
 
@@ -104,7 +115,8 @@ def store_apify_results(results: list[dict], query_label: str, project_id: str =
         last_name = person.get('last_name') or item.get('last_name') or ""
         name = person.get('full_name') or item.get('full_name') or f"{first_name} {last_name}".strip() or "Unknown Person"
         
-        email = person.get('email') or item.get('email') or ""
+        # Extracting email: check for all variations (personal, work, etc.)
+        email = person.get('email') or item.get('email') or person.get('personal_email') or item.get('personal_email') or person.get('work_email') or item.get('work_email') or ""
         linkedin = person.get('linkedin') or item.get('linkedin') or ""
         
         company_name = company.get('company_name') or item.get('company_name') or "Unknown Company"

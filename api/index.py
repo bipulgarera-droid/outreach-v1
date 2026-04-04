@@ -760,6 +760,36 @@ def trigger_enrichment():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/contacts/enrich_company', methods=['POST'])
+def trigger_company_enrichment():
+    """Trigger Jina/Gemini company enrichment for selected contacts in background."""
+    try:
+        data = request.json or {}
+        limit = data.get('limit', 500)
+        contact_ids = data.get('contact_ids', [])
+        project_id = data.get('project_id')
+        
+        import threading
+        from execution.enrich_company import enrich_companies_bulk
+        
+        def run_company_enrichment_task():
+            logger.info(f"Starting background company enrichment task (limit={limit}, project={project_id}, ids_received={len(contact_ids)})")
+            enrich_companies_bulk(limit=limit, project_id=project_id, contact_ids=contact_ids)
+            logger.info("Background company enrichment task complete.")
+
+        thread = threading.Thread(target=run_company_enrichment_task)
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'status': 'started',
+            'message': f'Company enrichment started in background for {len(contact_ids) if contact_ids else limit} contacts'
+        })
+    except Exception as e:
+        logger.error(f"Company Enrichment error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/contacts/camoufox-enrich', methods=['POST'])
 def trigger_camoufox_enrichment():
     """Stealth-browser enrichment: scrape website for emails + Instagram via Camoufox."""
@@ -1413,7 +1443,7 @@ def delete_contact_sequences(contact_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-def paraphrase_texts_batch(bodies: list, context: dict = None) -> list:
+def paraphrase_texts_batch(bodies: list, context: dict = None, company_context: dict = None) -> list:
     """Paraphrase multiple email bodies in ONE Gemini Flash call.
     Returns a list of paraphrased strings in the same order as input.
     If anything fails, returns originals as fallback."""
@@ -1442,9 +1472,27 @@ For EACH email:
 - CRITICAL: Preserve ALL template variables exactly as written: {{{{name}}}}, {{{{first_name}}}}, {{{{company}}}}, {{{{location}}}}, {{{{niche}}}}, {{{{sender_first_name}}}}, etc.
 - Do NOT add new facts or claims not in the original
 - No citations, no footnotes, no bracketed numbers like [1]
-- Plain text only, no HTML{contact_info}
+- Plain text only, no HTML{contact_info}"""
 
-Return ONLY a JSON array of exactly {len(bodies)} strings, in the same order:
+        if company_context:
+            system += f"""\n\n**CRITICAL STEP 1 INSTRUCTIONS**:
+Since we have detailed company intelligence, for EMAIL_1 ONLY, you MUST follow this strict 4-line framework perfectly:
+COMPANY SCRAPED CONTEXT: 
+- Mission: {company_context.get('mission_and_about','')}
+- Offerings: {company_context.get('offerings_and_positioning','')}
+- Process: {company_context.get('process_and_differentiation','')}
+- Proof: {company_context.get('proof_of_success','')}
+
+EMAIL_1 RULES:
+Rule 1: Line 1 MUST be a completely NEW, highly tailored, casual observation about their company based on the scraped context, immediately establishing "Why Now" and forming a logical bridge to the rest of the email. Do NOT reuse the original opening line.
+Rule 2: Line 2 MUST state the core offer exactly as provided in the original EMAIL_1 body.
+Rule 3: Line 3 MUST state the proof exactly as provided in the original EMAIL_1 body.
+Rule 4: Line 4 MUST be the exact CTA provided in the original EMAIL_1 body.
+Rule 5: Keep the total output for EMAIL_1 strictly under 75-100 words. No fluff. No filler.
+
+For EMAIL_2 onwards, just do the standard paraphrasing as normal."""
+
+        system += f"""\n\nReturn ONLY a JSON array of exactly {len(bodies)} strings, in the same order:
 ["rewritten EMAIL_1 body", "rewritten EMAIL_2 body", ...]
 
 Return ONLY the raw JSON array. No markdown, no explanation."""
@@ -1469,9 +1517,9 @@ Return ONLY the raw JSON array. No markdown, no explanation."""
         return bodies  # fallback: originals
 
 
-def paraphrase_text(text: str, context: dict = None) -> str:
+def paraphrase_text(text: str, context: dict = None, company_context: dict = None) -> str:
     """Single-text wrapper around the batch function (kept for backward compat)."""
-    return paraphrase_texts_batch([text], context)[0]
+    return paraphrase_texts_batch([text], context, company_context)[0]
 
 
 @app.route('/api/sequences/create', methods=['POST'])
@@ -1667,7 +1715,8 @@ def create_sequences():
 
                     # ── BATCH PARAPHRASE: all template bodies in ONE Flash call ──
                     bodies_raw = [t['body_template'] for t in templates_data]
-                    bodies_para = paraphrase_texts_batch(bodies_raw, context=variables)
+                    company_context = enrichment_data.get('company_context')
+                    bodies_para = paraphrase_texts_batch(bodies_raw, context=variables, company_context=company_context)
 
                     # ── SMART REFRESH / DEDUP CHECK ──
                     # Instead of a simple "already exists = skip", we're smarter:

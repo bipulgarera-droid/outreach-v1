@@ -1491,6 +1491,9 @@
                 <div class="flex items-center gap-2">
                     <input type="text" id="contactSearch" placeholder="Search contacts..." oninput="filterContacts()" 
                         class="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-3 py-1.5 w-48 focus:border-violet-500 focus:outline-none">
+                    <button onclick="runCompanyEnrichment()" class="bg-fuchsia-500/20 text-fuchsia-400 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 hover:bg-fuchsia-500/30" title="Scrape company websites using Jina and extract 4-pillar data via Gemini">
+                        <i data-lucide="building-2" class="w-3.5 h-3.5"></i> Enrich Co.
+                    </button>
                     <button onclick="runEnrichment()" class="bg-yellow-500/20 text-yellow-400 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 hover:bg-yellow-500/30">
                         <i data-lucide="sparkles" class="w-3.5 h-3.5"></i> Enrich
                     </button>
@@ -1529,6 +1532,7 @@
                                 <th class="px-4 py-3 text-left font-medium w-8"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()" class="rounded bg-gray-800 border-gray-600"></th>
                                 <th class="px-4 py-3 text-left font-medium">Name</th>
                                 <th class="px-4 py-3 text-left font-medium">Company</th>
+                                ${isReplied ? '' : '<th class="px-4 py-3 text-left font-medium text-fuchsia-400">Company Info</th>'}
                                 ${isReplied ? '' : '<th class="px-4 py-3 text-left font-medium text-cyan-400">Website</th>'}
                                 ${isReplied ? '' : '<th class="px-4 py-3 text-left font-medium">Phone</th>'}
                                 <th class="px-4 py-3 text-left font-medium">Email</th>
@@ -1556,6 +1560,19 @@
                                     </td>
                                     <td class="px-4 py-3 text-gray-300 max-w-[150px] truncate" title="${(() => { try { const ed = typeof c.enrichment_data === 'string' ? JSON.parse(c.enrichment_data) : (c.enrichment_data || {}); return (c.company || ed.company || ed.linkedin_company || c.source || '').replace(/"/g, '&quot;'); } catch (e) { return c.source || ''; } })()}">${(() => { try { const ed = typeof c.enrichment_data === 'string' ? JSON.parse(c.enrichment_data) : (c.enrichment_data || {}); return c.company || ed.company || ed.linkedin_company || c.source || '—'; } catch (e) { return c.source || '—'; } })()}</td>
                                     ${isReplied ? '' : `
+                                    <td class="px-4 py-3">
+                                        ${(() => {
+                                            try {
+                                                const ed = typeof c.enrichment_data === 'string' ? JSON.parse(c.enrichment_data) : (c.enrichment_data || {});
+                                                if (ed.company_context) {
+                                                    const ctxString = encodeURIComponent(JSON.stringify(ed.company_context));
+                                                    const compString = encodeURIComponent(c.company || '');
+                                                    return \`<button onclick="showCompanyContextModal('\${compString}', '\${ctxString}')" class="text-xs bg-fuchsia-500/20 text-fuchsia-400 border border-fuchsia-500/50 px-2 py-1 rounded hover:bg-fuchsia-500/30 font-medium">View</button>\`;
+                                                }
+                                                return '<span class="text-gray-600 text-xs">—</span>';
+                                            } catch(e) { return '<span class="text-gray-600 text-xs">—</span>'; }
+                                        })()}
+                                    </td>
                                     <td class="px-4 py-3 text-cyan-400 font-medium">
                                         ${(() => {
                         try {
@@ -3244,6 +3261,83 @@
                 } else if (data.processed !== undefined) {
                     showToast(`✅ Enriched ${data.processed} contacts`);
                     loadContent();
+                }
+            } catch (e) { showToast('❌ ' + e.message); }
+        }
+
+        function showCompanyContextModal(companyNameEnc, ctxString) {
+            try {
+                const ctx = JSON.parse(decodeURIComponent(ctxString));
+                const companyName = decodeURIComponent(companyNameEnc);
+                document.getElementById('modalContent').innerHTML = `
+                    <div class="p-5 border-b border-gray-800 flex items-center justify-between">
+                        <h2 class="text-lg font-semibold text-white flex items-center gap-2">
+                            <i data-lucide="building-2" class="w-5 h-5 text-fuchsia-400"></i>
+                            ${companyName || 'Company Context'}
+                        </h2>
+                        <button onclick="closeModal()" class="text-gray-400 hover:text-white transition-colors">
+                            <i data-lucide="x" class="w-5 h-5"></i>
+                        </button>
+                    </div>
+                    <div class="p-5 space-y-4 text-sm text-gray-300">
+                        <div class="bg-gray-800/50 p-3 rounded-lg border border-gray-700">
+                            <h3 class="text-fuchsia-400 font-medium mb-1 uppercase text-xs tracking-wider">Mission & About</h3>
+                            <p>${ctx.mission_and_about}</p>
+                        </div>
+                        <div class="bg-gray-800/50 p-3 rounded-lg border border-gray-700">
+                            <h3 class="text-fuchsia-400 font-medium mb-1 uppercase text-xs tracking-wider">Offerings & Positioning</h3>
+                            <p>${ctx.offerings_and_positioning}</p>
+                        </div>
+                        <div class="bg-gray-800/50 p-3 rounded-lg border border-gray-700">
+                            <h3 class="text-fuchsia-400 font-medium mb-1 uppercase text-xs tracking-wider">Process & Differentiation</h3>
+                            <p>${ctx.process_and_differentiation}</p>
+                        </div>
+                        <div class="bg-gray-800/50 p-3 rounded-lg border border-gray-700">
+                            <h3 class="text-fuchsia-400 font-medium mb-1 uppercase text-xs tracking-wider">Proof of Success</h3>
+                            <p>${ctx.proof_of_success}</p>
+                        </div>
+                    </div>
+                    <div class="p-4 bg-gray-900 border-t border-gray-800 flex justify-end gap-2">
+                        <button onclick="closeModal()" class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white rounded-lg transition-colors font-medium text-sm">Close</button>
+                    </div>
+                `;
+                document.getElementById('modalOverlay').classList.remove('hidden');
+                document.getElementById('modalOverlay').classList.add('flex');
+                if (window.lucide) lucide.createIcons();
+            } catch (e) {
+                showToast('❌ Error loading context: ' + e.message);
+            }
+        }
+
+        async function runCompanyEnrichment() {
+            const selectedIds = getSelectedContactIds();
+            let targetIds = selectedIds;
+
+            if (targetIds.length === 0) {
+                const { data } = await supabase
+                    .from('contacts')
+                    .select('id')
+                    .eq('project_id', currentProjectId)
+                    .limit(500);
+                targetIds = (data || []).map(c => c.id);
+            }
+
+            if (targetIds.length === 0) {
+                showToast('No new contacts to enrich!');
+                return;
+            }
+
+            const msg = `Enrich ${targetIds.length} contact(s) with deep company data using Jina and Gemini?`;
+            if (!confirm(msg)) return;
+
+            showToast('🏢 Company enrichment started in background...');
+            try {
+                const body = JSON.stringify({ limit: 500, contact_ids: targetIds, project_id: currentProjectId });
+                const res = await apiFetch('/api/contacts/enrich_company', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+                const data = await res.json();
+
+                if (data.status === 'started') {
+                    _pollTaskProgress({ type: 'enrichment', targetIds, total: targetIds.length });
                 }
             } catch (e) { showToast('❌ ' + e.message); }
         }
