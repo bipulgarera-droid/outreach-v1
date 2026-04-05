@@ -2518,6 +2518,11 @@
                         </div>
                     `).join('')}
                 </div>
+                <div class="mt-4 flex justify-end">
+                    <button onclick="addTemplate('${project.id}')" class="flex items-center gap-2 bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30 border border-emerald-500/30 px-4 py-2 rounded-lg text-sm font-medium transition-all">
+                        <i data-lucide="plus" class="w-4 h-4"></i> Add Empty Step
+                    </button>
+                </div>
             `;
             // Call createIcons to render the newly injected lucide icons
             setTimeout(() => {
@@ -2635,6 +2640,23 @@
             try {
                 await apiFetch(`/api/templates/${id}`, { method: 'DELETE' });
                 showToast('✅ Template deleted');
+                loadContent();
+            } catch (e) {
+                showToast('❌ Error: ' + e.message);
+            }
+        }
+
+        async function addTemplate(projectId) {
+            showToast('Adding new step...');
+            try {
+                const res = await apiFetch('/api/templates', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ project_id: projectId })
+                });
+                const data = await res.json();
+                if (data.error) throw new Error(data.error);
+                showToast('✅ Step added. Please customize it.');
                 loadContent();
             } catch (e) {
                 showToast('❌ Error: ' + e.message);

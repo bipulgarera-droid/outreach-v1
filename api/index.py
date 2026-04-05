@@ -1242,6 +1242,35 @@ def list_templates():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/templates', methods=['POST'])
+def add_template():
+    """Add a new blank template to the end of a project's sequence."""
+    try:
+        data = request.json
+        project_id = data.get('project_id')
+        if not project_id: return jsonify({'error': 'project_id required'}), 400
+        
+        # Get highest current step number
+        res = supabase.table('email_templates').select('step_number').eq('project_id', project_id).order('step_number', desc=True).limit(1).execute()
+        next_step = 1
+        if res.data:
+            next_step = res.data[0].get('step_number', 0) + 1
+            
+        new_template = {
+            'project_id': project_id,
+            'step_number': next_step,
+            'name': f'Step {next_step} (Manual)',
+            'subject_template': '',
+            'body_template': '',
+            'delay_days': 14
+        }
+        
+        insert_res = supabase.table('email_templates').insert(new_template).execute()
+        return jsonify({'template': insert_res.data[0] if insert_res.data else None})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/templates/<int:template_id>', methods=['PUT'])
 def update_template(template_id):
     """Update an email template."""
