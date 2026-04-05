@@ -214,17 +214,42 @@ def _find_contact_link(text: str, base_url: str) -> str:
     return ''
 
 
-def find_emails_by_domain(domain: str, website: str = '') -> list[str]:
+def _extract_instagram_from_text(text: str) -> str:
     """
-    Jina-only email discovery:
-    1. Scrape homepage → extract emails + discover real contact page URL
-    2. Scrape contact page → extract more emails
+    Find an Instagram handle or profile URL in Jina-rendered page text.
+    Returns '@handle' string or '' if not found.
+    """
+    skip_handles = {'explore', 'accounts', 'about', 'tags', 'locations',
+                    'stories', 'directory', 'p', 'reel', 'tv', 'reels'}
+
+    # Markdown links: [text](https://instagram.com/handle)
+    for m in re.finditer(r'\[([^\]]*)\]\((https?://(?:www\.)?instagram\.com/([\w.]+)[^\)]*)\)', text):
+        handle = m.group(3).rstrip('/')
+        if handle.lower() not in skip_handles:
+            return f'@{handle}'
+
+    # Bare instagram.com URLs
+    for m in re.finditer(r'https?://(?:www\.)?instagram\.com/([\w.]+)', text):
+        handle = m.group(1).rstrip('/')
+        if handle.lower() not in skip_handles:
+            return f'@{handle}'
+
+    return ''
+
+
+def scrape_website_data(website: str, domain: str) -> tuple[list[str], str]:
+    """
+    Jina-only discovery from company website.
+    Returns (emails, instagram_handle).
+    1. Scrape homepage → extract emails + instagram + find contact page link
+    2. Scrape contact page → extract more emails + instagram
     """
     if not website:
-        return []
+        return [], ''
 
     found_emails: list[str] = []
     seen_emails: set[str] = set()
+    instagram = ''
 
     def _collect(emails: list[str]) -> None:
         for e in emails:
@@ -235,6 +260,8 @@ def find_emails_by_domain(domain: str, website: str = '') -> list[str]:
     # ── Step 1: Homepage ──
     homepage_text = _jina_scrape(website)
     _collect(_extract_emails_for_domain(homepage_text, domain))
+    if not instagram:
+        instagram = _extract_instagram_from_text(homepage_text)
 
     contact_url = _find_contact_link(homepage_text, website)
 
@@ -242,13 +269,24 @@ def find_emails_by_domain(domain: str, website: str = '') -> list[str]:
     if contact_url and contact_url != website:
         contact_text = _jina_scrape(contact_url)
         _collect(_extract_emails_for_domain(contact_text, domain))
+        if not instagram:
+            instagram = _extract_instagram_from_text(contact_text)
 
     if found_emails:
         logger.info(f"    -> Found {len(found_emails)} email(s) for @{domain} via Jina")
     else:
         logger.warning(f"  ❌ No emails found for domain: {domain}")
 
-    return found_emails
+    if instagram:
+        logger.info(f"  📸 Instagram from website: {instagram}")
+
+    return found_emails, instagram
+
+
+# Keep old name as alias for backward compatibility
+def find_emails_by_domain(domain: str, website: str = '') -> list[str]:
+    emails, _ = scrape_website_data(website, domain)
+    return emails
 
 
 def _is_valid_email(email: str) -> bool:
@@ -405,12 +443,27 @@ def enrich_single_contact(contact: dict, project_info: dict = None) -> Optional[
             logger.warning(f"  ❌ No website found for: {company}")
     
     domain = _extract_domain(website) if website else ''
+
+    # ══════════════════════════════════════════════════════
+    # STEP 2+3: Emails + Instagram from website (Jina)
+    # ══════════════════════════════════════════════════════
+    jina_emails: list[str] = []
+    jina_instagram = ''
+    if domain:
+        jina_emails, jina_instagram = scrape_website_data(website, domain)
+
+    # Wire in Jina Instagram (use as primary source if found)
+    if not existing_instagram and jina_instagram:
+        updates['instagram'] = jina_instagram
+        updates['enrichment_data']['instagram_source'] = 'jina_website'
+        logger.info(f"  📸 Instagram (Jina): {jina_instagram}")
+        existing_instagram = jina_instagram  # prevent Serper fallback below
     
     # ══════════════════════════════════════════════════════
     # STEP 2: Find Emails by Domain
     # ══════════════════════════════════════════════════════
     if not existing_email and domain:
-        emails = find_emails_by_domain(domain, website)
+        emails = jina_emails
         
         if emails:
             scored = [(email, _score_email(email, company, domain)) for email in emails]
@@ -473,14 +526,14 @@ def enrich_single_contact(contact: dict, project_info: dict = None) -> Optional[
         logger.warning(f"  ⚠️ No website/domain — can't search for emails.")
 
     # ══════════════════════════════════════════════════════
-    # STEP 3: Instagram
+    # STEP 4: Instagram fallback via Serper (if Jina didn't find it)
     # ══════════════════════════════════════════════════════
     if not existing_instagram:
         instagram = find_instagram_serper(company, niche)
         if instagram:
             updates['instagram'] = instagram
             updates['enrichment_data']['instagram_source'] = 'serper'
-            logger.info(f"  📸 Instagram: {instagram}")
+            logger.info(f"  📸 Instagram (Serper): {instagram}")
     
     # ── Brand / Company extraction from URL ──
     if contact.get('status') in ['new', 'enriched'] and website:
