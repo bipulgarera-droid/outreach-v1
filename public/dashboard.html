@@ -1970,12 +1970,12 @@
                 const data = await res.json();
                 if (data.error) throw new Error(data.error);
 
-                showToast(\`✅ Successfully updated \${data.updated || updates.length} rows\`);
+                showToast(`✅ Successfully updated ${data.updated || updates.length} rows`);
                 closeModal();
                 loadContent(); // Refresh the table
             } catch (e) {
                 showToast('❌ Bulk update failed: ' + e.message);
-                btn.innerHTML = \`<i data-lucide="check-circle" class="w-4 h-4"></i> Apply to \${expectedCount} rows\`;
+                btn.innerHTML = `<i data-lucide="check-circle" class="w-4 h-4"></i> Apply to ${expectedCount} rows`;
                 btn.disabled = false;
                 if (window.lucide) lucide.createIcons();
             }
