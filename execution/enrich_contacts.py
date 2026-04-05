@@ -36,7 +36,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 SERPER_API_KEY = os.getenv('SERPER_API_KEY')
+JINA_API_KEY = os.getenv('JINA_API_KEY', '')
 SERPER_URL = 'https://google.serper.dev/search'
+JINA_URL = 'https://r.jina.ai/'
 
 # Domains to skip when discovering a company website
 SKIP_DOMAINS = {
@@ -166,62 +168,93 @@ def find_website_serper(company: str, niche: str = '') -> Optional[str]:
 # STEP 2: Find Emails by Domain
 # =============================================================================
 
-def find_emails_by_domain(domain: str) -> list[str]:
-    """
-    Find email addresses associated with a domain via Serper.
-    Query: "@{domain}" AND ("email" OR "contact")
-    """
-    if not SERPER_API_KEY or not domain:
+def _scrape_emails_from_page(url: str, domain: str) -> list[str]:
+    """Scrape a URL via Jina Reader and extract emails belonging to domain."""
+    try:
+        headers = {'Accept': 'text/plain'}
+        if JINA_API_KEY:
+            headers['Authorization'] = f'Bearer {JINA_API_KEY}'
+        jina_url = JINA_URL + url
+        logger.info(f"  🔎 Jina scrape: {url}")
+        resp = requests.get(jina_url, headers=headers, timeout=20)
+        text = resp.text
+        emails = re.findall(r'[\w.+-]+@[\w-]+\.[\w.-]+', text)
+        found = []
+        seen = set()
+        for email in emails:
+            email = email.strip().rstrip('.,;:)!% ]').strip()
+            el = email.lower()
+            if el not in seen and _is_valid_email(el) and domain.lower() in el:
+                found.append(email)
+                seen.add(el)
+        return found
+    except Exception as e:
+        logger.warning(f"Jina scrape error for {url}: {e}")
         return []
-    
-    query = f'"@{domain}" AND ("email" OR "contact")'
-    
-    headers = {
-        'X-API-KEY': SERPER_API_KEY,
-        'Content-Type': 'application/json'
-    }
+
+
+def find_emails_by_domain(domain: str, website: str = '') -> list[str]:
+    """
+    Find emails for a domain.
+    1. Serper query: "@{domain}" AND ("email" OR "contact")
+    2. Fallback: Jina scrape of /contact and /about pages
+    """
+    if not domain:
+        return []
     
     found_emails = []
     seen_emails = set()
-    
-    try:
-        payload = {'q': query, 'num': 10}
-        logger.info(f"  📧 Email search: {query}")
-        
-        response = requests.post(SERPER_URL, headers=headers, json=payload, timeout=15)
-        data = response.json()
-        
-        # Check AI snippet / answer box / knowledge graph
-        for text_block in [
-            data.get('answerBox', {}).get('snippet', '') or '',
-            data.get('answerBox', {}).get('answer', '') or '',
-            data.get('knowledgeGraph', {}).get('description', '') or '',
-        ]:
-            emails = re.findall(r'[\w.+-]+@[\w-]+\.[\w.-]+', text_block)
-            for email in emails:
-                email = email.strip().rstrip('.,;:)!% ]').strip()
-                email_lower = email.lower()
-                if email_lower not in seen_emails and _is_valid_email(email_lower):
+
+    # ── Step 1: Serper search ──
+    if SERPER_API_KEY:
+        query = f'"@{domain}" AND ("email" OR "contact")'
+        headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
+        try:
+            payload = {'q': query, 'num': 10}
+            logger.info(f"  📧 Email search: {query}")
+            response = requests.post(SERPER_URL, headers=headers, json=payload, timeout=15)
+            data = response.json()
+
+            for text_block in [
+                data.get('answerBox', {}).get('snippet', '') or '',
+                data.get('answerBox', {}).get('answer', '') or '',
+                data.get('knowledgeGraph', {}).get('description', '') or '',
+            ]:
+                for email in re.findall(r'[\w.+-]+@[\w-]+\.[\w.-]+', text_block):
+                    email = email.strip().rstrip('.,;:)!% ]').strip()
+                    el = email.lower()
+                    if el not in seen_emails and _is_valid_email(el):
+                        found_emails.append(email)
+                        seen_emails.add(el)
+
+            for result in data.get('organic', []):
+                text = f"{result.get('title', '')} {result.get('snippet', '')}"
+                for email in re.findall(r'[\w.+-]+@[\w-]+\.[\w.-]+', text):
+                    email = email.strip().rstrip('.,;:)!% ]').strip()
+                    el = email.lower()
+                    if el not in seen_emails and _is_valid_email(el):
+                        found_emails.append(email)
+                        seen_emails.add(el)
+
+            if found_emails:
+                logger.info(f"    -> Found {len(found_emails)} emails via Serper for @{domain}")
+        except Exception as e:
+            logger.warning(f"Serper email search error for '{domain}': {e}")
+
+    # ── Step 2: Jina fallback — scrape contact/about pages ──
+    if not found_emails and website:
+        base = website.rstrip('/')
+        for path in ['/contact', '/contact-us', '/about', '/connect']:
+            page_emails = _scrape_emails_from_page(base + path, domain)
+            for email in page_emails:
+                el = email.lower()
+                if el not in seen_emails:
                     found_emails.append(email)
-                    seen_emails.add(email_lower)
-        
-        # Scan organic results
-        for result in data.get('organic', []):
-            text = f"{result.get('title', '')} {result.get('snippet', '')}"
-            emails = re.findall(r'[\w.+-]+@[\w-]+\.[\w.-]+', text)
-            for email in emails:
-                email = email.strip().rstrip('.,;:)!% ]').strip()
-                email_lower = email.lower()
-                if email_lower not in seen_emails and _is_valid_email(email_lower):
-                    found_emails.append(email)
-                    seen_emails.add(email_lower)
-        
-        if found_emails:
-            logger.info(f"    -> Found {len(found_emails)} emails for @{domain}")
-            
-    except Exception as e:
-        logger.warning(f"Email search error for domain '{domain}': {e}")
-    
+                    seen_emails.add(el)
+            if found_emails:
+                logger.info(f"    -> Found {len(found_emails)} emails via Jina for @{domain}")
+                break
+
     return found_emails
 
 
@@ -384,7 +417,7 @@ def enrich_single_contact(contact: dict, project_info: dict = None) -> Optional[
     # STEP 2: Find Emails by Domain
     # ══════════════════════════════════════════════════════
     if not existing_email and domain:
-        emails = find_emails_by_domain(domain)
+        emails = find_emails_by_domain(domain, website)
         
         if emails:
             scored = [(email, _score_email(email, company, domain)) for email in emails]
@@ -516,6 +549,15 @@ def enrich_contacts(limit: int = 50, project_id: str = None, contact_ids: list =
             updates = enrich_single_contact(contact, project_info)
             
             if updates and not dry_run:
+                # Split website out — stale schema cache can reject it while the
+                # rest of the update (email, instagram, enrichment_data) is fine.
+                website_val = updates.pop('website', None)
+                if website_val:
+                    try:
+                        supabase.table('contacts').update({'website': website_val}).eq('id', contact['id']).execute()
+                    except Exception as we:
+                        logger.warning(f"Could not write website column (schema cache?): {we}")
+                        updates.setdefault('enrichment_data', {})['website'] = website_val
                 supabase.table('contacts').update(updates).eq('id', contact['id']).execute()
             
             if updates:
