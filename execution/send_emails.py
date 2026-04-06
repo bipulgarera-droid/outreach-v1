@@ -36,7 +36,7 @@ DELAY_MIN = int(os.getenv('DELAY_MIN_SECONDS', 45))
 DELAY_MAX = int(os.getenv('DELAY_MAX_SECONDS', 90))
 
 
-def send_pending_emails(limit: int = 600, dry_run: bool = False, project_id: str = None, contact_ids: list[str] = None, skip_reply_check: bool = False, logger_callback=None) -> dict:
+def send_pending_emails(limit: int = 99999, dry_run: bool = False, project_id: str = None, contact_ids: list[str] = None, skip_reply_check: bool = False, logger_callback=None) -> dict:
     """Send all pending emails where scheduled_at <= now(). Filters by project_id and/or contact_ids if provided."""
 
     def _log(msg, level='info'):
@@ -75,22 +75,30 @@ def send_pending_emails(limit: int = 600, dry_run: bool = False, project_id: str
         logger.error(f"Failed to initialize SMTP pool: {e}")
         return {'error': str(e)}
 
-    # Fetch pending sequences due for sending
+    # Fetch ALL pending sequences due for sending (paginate through 1000-row Supabase chunks)
     now = datetime.utcnow().isoformat()
-    query = supabase.table('email_sequences') \
-        .select('*, contacts(name, email, enrichment_data)') \
-        .eq('status', 'pending') \
-        .lte('scheduled_at', now)   # ALWAYS filter by date — never send future steps
-
-    if contact_ids:
-        query = query.in_('contact_id', contact_ids)
-        
-    if project_id:
-        query = query.eq('project_id', project_id)
-        
-    result = query.limit(limit).order('scheduled_at').execute()
     
-    sequences = result.data or []
+    def build_send_query():
+        q = supabase.table('email_sequences') \
+            .select('*, contacts(name, email, enrichment_data)') \
+            .eq('status', 'pending') \
+            .lte('scheduled_at', now)
+        if contact_ids:
+            q = q.in_('contact_id', contact_ids)
+        if project_id:
+            q = q.eq('project_id', project_id)
+        return q.order('scheduled_at')
+
+    sequences = []
+    offset = 0
+    while True:
+        chunk = build_send_query().range(offset, offset + 999).execute()
+        chunk_data = chunk.data or []
+        sequences.extend(chunk_data)
+        if len(chunk_data) < 1000:
+            break
+        offset += 1000
+    
     _log(f"Found {len(sequences)} emails ready to send")
     
     # Fetch sender_groups for all involved projects
@@ -105,6 +113,10 @@ def send_pending_emails(limit: int = 600, dry_run: bool = False, project_id: str
     stats = {'processed': 0, 'sent': 0, 'skipped': 0, 'errors': 0}
     
     for seq in sequences:
+        # Stop once we've SENT enough (skips/errors don't count against limit)
+        if stats['sent'] >= limit:
+            _log(f"Reached send limit ({limit}). Stopping.")
+            break
         try:
             contact = seq.get('contacts', {})
             to_email = (contact.get('email') or '').strip().rstrip('.,;:)!% ]').strip()
@@ -287,7 +299,7 @@ def send_pending_emails(limit: int = 600, dry_run: bool = False, project_id: str
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Send pending drip campaign emails using multi-account SMTP')
-    parser.add_argument('--limit', type=int, default=600, help='Max emails to send')
+    parser.add_argument('--limit', type=int, default=99999, help='Max emails to send (default: unlimited, SMTP pool limits apply)')
     parser.add_argument('--dry-run', action='store_true', help='Preview without sending')
     parser.add_argument('--project-id', type=str, help='Restrict sending to a specific project ID')
     

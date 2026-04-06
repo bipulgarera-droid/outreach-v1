@@ -1485,20 +1485,29 @@ def list_sequences():
     try:
         project_id = request.args.get('project_id')
         if not project_id: return jsonify({'error': 'project_id required'}), 400
-        project_id = request.args.get('project_id')
-        if not project_id: return jsonify({'error': 'project_id required'}), 400
         contact_id = request.args.get('contact_id')
         status = request.args.get('status')
         
-        query = supabase.table('email_sequences').select('*, contacts(name, email)').eq('project_id', project_id)
-        
-        if contact_id:
-            query = query.eq('contact_id', contact_id)
-        if status:
-            query = query.eq('status', status)
-        
-        result = query.order('created_at', desc=True).limit(10000).execute()
-        return jsonify({'sequences': result.data or []})
+        def build_seq_query():
+            q = supabase.table('email_sequences').select('*, contacts(name, email)').eq('project_id', project_id)
+            if contact_id:
+                q = q.eq('contact_id', contact_id)
+            if status:
+                q = q.eq('status', status)
+            return q.order('created_at', desc=True)
+
+        # Paginate through 1000-row chunks (Supabase hard caps at 1000 per request)
+        all_data = []
+        offset = 0
+        while True:
+            chunk = build_seq_query().range(offset, offset + 999).execute()
+            chunk_data = chunk.data or []
+            all_data.extend(chunk_data)
+            if len(chunk_data) < 1000:
+                break
+            offset += 1000
+
+        return jsonify({'sequences': all_data})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -2169,7 +2178,7 @@ def trigger_send():
     """Send pending scheduled emails."""
     try:
         data = request.json or {}
-        limit = data.get('limit', 600) # This limit is now handled internally by get_pending_sequences_for_sending
+        limit = data.get('limit', 99999)
         dry_run = data.get('dry_run', False)
         project_id = data.get('project_id')
         contact_ids = data.get('contact_ids') # For "Send Selected"
@@ -2305,7 +2314,7 @@ def trigger_daily_run():
     """Trigger the full daily workflow: check replies + send pending emails."""
     try:
         data = request.json or {}
-        limit = data.get('limit', 600)
+        limit = data.get('limit', 99999)
         dry_run = data.get('dry_run', False)
         project_id = data.get('project_id')
 

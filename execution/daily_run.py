@@ -36,7 +36,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def daily_run(limit: int = 600, dry_run: bool = False, delay_min: int = 20, delay_max: int = 40, project_id: str = None) -> dict:
+def daily_run(limit: int = 99999, dry_run: bool = False, delay_min: int = 20, delay_max: int = 40, project_id: str = None) -> dict:
     """
     Execute the full daily workflow:
     1. Check for replies (IMAP)
@@ -116,8 +116,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Daily local email sender + reply checker'
     )
-    parser.add_argument('--limit', type=int, default=600,
-                        help='Max emails to send (default: 600)')
+    parser.add_argument('--limit', type=int, default=99999,
+                        help='Max emails to send (default: unlimited, SMTP pool limits apply)')
     parser.add_argument('--delay-min', type=int, default=20,
                         help='Min seconds between emails (default: 20)')
     parser.add_argument('--delay-max', type=int, default=40,
