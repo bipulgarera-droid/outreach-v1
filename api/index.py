@@ -1847,11 +1847,25 @@ def create_sequences():
                                 'enrichment_data': enrichment_data
                             }).eq('id', contact['id']).execute()
                     # --------------------------------------------------------
-
-                    raw_company = contact.get('company') or enrichment_data.get('company') or enrichment_data.get('linkedin_company') or contact.get('name') or 'your company'
-                    full_name = contact.get('name', 'there')
                     contact_email = (contact.get('email') or '').strip().rstrip('.,;:)!% ]').strip()
                     
+                    raw_company = contact.get('company') or enrichment_data.get('company') or enrichment_data.get('linkedin_company') or contact.get('name') or 'your company'
+                    
+                    # Fix for "Unknown" companies to smartly pull from domain fallback
+                    if str(raw_company).lower().strip() in ['unknown', 'unknown company', 'unknown business', '', '-', 'n/a', 'none']:
+                        if contact_email and '@' in contact_email:
+                            domain = contact_email.split('@')[-1]
+                            # Simple domains like "remodelboom.com" -> "Remodelboom" 
+                            name_part = domain.split('.')[0]
+                            # Exclude generic mail domains
+                            if name_part.lower() not in ['gmail', 'yahoo', 'outlook', 'hotmail', 'icloud', 'aol']:
+                                raw_company = name_part.title()
+                            else:
+                                raw_company = 'your company'
+                        else:
+                            raw_company = 'your company'
+
+                    full_name = contact.get('name', 'there')
                     is_personal = _is_personal_email(contact_email, full_name)
                     clean_biz = _clean_biz_name(full_name)
                     
