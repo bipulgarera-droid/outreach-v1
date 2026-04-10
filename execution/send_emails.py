@@ -143,6 +143,10 @@ def send_pending_emails(limit: int = 99999, dry_run: bool = False, project_id: s
                 # Strict Mode: Only proceed if OSINT fallback verified them.
                 serper_passed = ed.get('serper_verified')
                 
+                # GrowthScout's scraping implies it already did Google searches to find the email
+                if ed.get('source_app') == 'growthscout':
+                    serper_passed = True
+                
                 # If OSINT never ran for this contact, do it inline right now
                 if serper_passed is None:
                     _log(f"OSINT BOUNCE PROTECTION: {to_email} is RISKY but missing OSINT check. Running real-time verification now...")

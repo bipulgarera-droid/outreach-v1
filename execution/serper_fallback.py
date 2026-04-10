@@ -39,6 +39,10 @@ def verify_risky_contacts_bulk(contacts: list[dict], supabase_client, job_logger
         
         # Only risky emails need OSINT verification
         if v_status == 'risky':
+            # Skip OSINT check if GrowthScout push (it already did Serper)
+            if ed.get('source_app') == 'growthscout':
+                continue
+                
             email = c.get('email') or ''
             email = str(email).strip()
             if email and '@' in email:
