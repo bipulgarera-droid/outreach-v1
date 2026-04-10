@@ -61,11 +61,13 @@ def verify_risky_contacts_bulk(contacts: list[dict], supabase_client, job_logger
     emails_to_test = []
     
     for c in to_verify:
-        email = c['email'].strip()
+        email = (c.get('email') or '').strip()
+        if not email:
+            continue
         email_to_contacts[email].append(c)
         
     for e, contact_list in email_to_contacts.items():
-        comp = contact_list[0].get('company', '').strip()
+        comp = (contact_list[0].get('company') or '').strip()
         emails_to_test.append((e, comp))
     
     logger.info(f"OSINT FALLBACK: Querying Serper API for {len(emails_to_test)} unique emails...")
