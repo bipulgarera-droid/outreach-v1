@@ -186,6 +186,33 @@ def send_pending_emails(limit: int = 99999, dry_run: bool = False, project_id: s
                 stats['skipped'] += 1
                 continue
             
+            # ── PRE-SEND DUPLICATE GUARD ───────────────────────────────
+            # Re-check the DB status and scheduled_at BEFORE sending.
+            # When Step 1 fires, it reschedules Steps 2,3,4 into the future.
+            # But those steps are already loaded in memory from the initial query.
+            # Without this guard, they'd all get sent in the same loop iteration.
+            if not dry_run:
+                recheck = supabase.table('email_sequences') \
+                    .select('status, scheduled_at') \
+                    .eq('id', seq['id']) \
+                    .single() \
+                    .execute()
+                if not recheck.data or recheck.data.get('status') != 'pending':
+                    logger.warning(f"  PRE-SEND GUARD: Skipping seq {seq['id']} — no longer pending (status: {recheck.data.get('status') if recheck.data else 'N/A'}).")
+                    stats['skipped'] += 1
+                    stats['processed'] += 1
+                    continue
+                
+                # CRITICAL: If a preceding step in this loop rescheduled this step
+                # to the future, do NOT send it now.
+                db_scheduled = recheck.data.get('scheduled_at')
+                if db_scheduled and db_scheduled > datetime.utcnow().isoformat():
+                    logger.warning(f"  PRE-SEND GUARD: Skipping seq {seq['id']} step {seq['step_number']} to {to_email} — rescheduled to {db_scheduled} by a preceding step.")
+                    stats['skipped'] += 1
+                    stats['processed'] += 1
+                    continue
+            # ────────────────────────────────────────────────────────────
+
             # Get next available email account
             proj_id = seq.get('project_id')
             sender_group = sender_groups.get(proj_id, 'all')
@@ -222,28 +249,6 @@ def send_pending_emails(limit: int = 99999, dry_run: bool = False, project_id: s
             
             if res.get('success'):
                 if not dry_run:
-                    # ── ATOMIC DUPLICATE GUARD ──────────────────────────────
-                    # Re-check the status and scheduled_at right before marking as sent
-                    # to prevent sending steps that were just rescheduled into the future
-                    # by a preceding step in this exact same memory loop.
-                    recheck = supabase.table('email_sequences') \
-                        .select('status, scheduled_at') \
-                        .eq('id', seq['id']) \
-                        .single() \
-                        .execute()
-                    if not recheck.data or recheck.data.get('status') != 'pending':
-                        logger.warning(f"  Skipping update — seq {seq['id']} is no longer pending (was it sent already?).")
-                        stats['skipped'] += 1
-                        stats['processed'] += 1
-                        continue
-                        
-                    # CRITICAL: Prevent sending Step 3 immediately after Step 2 if Step 3 was just rescheduled
-                    if recheck.data.get('scheduled_at') and recheck.data.get('scheduled_at') > datetime.utcnow().isoformat():
-                        logger.warning(f"  Skipping seq {seq['id']} — it was rescheduled to the future ({recheck.data.get('scheduled_at')}) by a preceding step.")
-                        stats['skipped'] += 1
-                        stats['processed'] += 1
-                        continue
-                    # ────────────────────────────────────────────────────────
                     now_sent = datetime.utcnow()
                     supabase.table('email_sequences').update({
                         'status': 'sent',
