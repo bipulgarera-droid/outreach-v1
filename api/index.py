@@ -1040,7 +1040,8 @@ def trigger_manual_verification():
     try:
         data = request.json or {}
         contact_ids = data.get('contact_ids', [])
-        force = data.get('force', False)
+        # Always force re-verification if user manually selects contacts for verification
+        force = True 
         if not contact_ids:
             return jsonify({'error': 'No contact IDs provided'}), 400
 
