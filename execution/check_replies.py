@@ -215,6 +215,9 @@ def check_all_replies(days=7, logger_callback=None, skip_db_update=False):
                     
                     body_snippet = _extract_plain_text_snippet(msg_obj)
                     
+                    # Extract Message-ID for dedup (globally unique per email)
+                    email_message_id = (msg_obj.get('Message-ID') or '').strip()
+                    
                     # === DETERMINISTIC CLASSIFICATION ===
                     result = classify_email(
                         sender=sender,
@@ -240,18 +243,39 @@ def check_all_replies(days=7, logger_callback=None, skip_db_update=False):
                             if not skip_db_update:
                                 supabase.table('contacts').update({'status': 'bounced'}).eq('id', contact_id).execute()
                                 supabase.table('email_sequences').update({'status': 'cancelled'}).eq('contact_id', contact_id).eq('status', 'pending').execute()
-                                # Insert into replies table for dashboard visibility
+                                # Insert into replies table for dashboard visibility (dedup by Message-ID)
                                 try:
-                                    supabase.table('replies').insert({
-                                        'contact_id': contact_id,
-                                        'project_id': project_id,
-                                        'sender_email': sender,
-                                        'recipient_email': acct_email,
-                                        'subject': subject_hdr[:200],
-                                        'body': body_snippet[:2000],
-                                        'sentiment': 'bounce',
-                                        'received_at': datetime.now().isoformat()
-                                    }).execute()
+                                    # Skip if this exact email was already recorded
+                                    if email_message_id:
+                                        existing = supabase.table('replies').select('id').eq('message_id', email_message_id).execute()
+                                        if existing.data:
+                                            log(f"  ⏭️ [DEDUP] Bounce for {matched_email} already recorded (Message-ID exists). Skipping insert.")
+                                        else:
+                                            supabase.table('replies').insert({
+                                                'contact_id': contact_id,
+                                                'project_id': project_id,
+                                                'sender_email': sender,
+                                                'recipient_email': acct_email,
+                                                'subject': subject_hdr[:200],
+                                                'body': body_snippet[:2000],
+                                                'sentiment': 'bounce',
+                                                'message_id': email_message_id,
+                                                'received_at': datetime.now().isoformat()
+                                            }).execute()
+                                    else:
+                                        # No Message-ID (rare) — fallback dedup on contact + sender + subject
+                                        existing = supabase.table('replies').select('id').eq('contact_id', contact_id).eq('sender_email', sender).eq('subject', subject_hdr[:200]).execute()
+                                        if not existing.data:
+                                            supabase.table('replies').insert({
+                                                'contact_id': contact_id,
+                                                'project_id': project_id,
+                                                'sender_email': sender,
+                                                'recipient_email': acct_email,
+                                                'subject': subject_hdr[:200],
+                                                'body': body_snippet[:2000],
+                                                'sentiment': 'bounce',
+                                                'received_at': datetime.now().isoformat()
+                                            }).execute()
                                 except Exception as insert_err:
                                     log(f"  ⚠️ Could not insert bounce into replies table: {insert_err}")
                         elif not contact_id:
@@ -266,18 +290,37 @@ def check_all_replies(days=7, logger_callback=None, skip_db_update=False):
                             if not skip_db_update:
                                 supabase.table('contacts').update({'status': 'replied'}).eq('id', contact_id).execute()
                                 supabase.table('email_sequences').update({'status': 'cancelled'}).eq('contact_id', contact_id).eq('status', 'pending').execute()
-                                # Insert into replies table for dashboard visibility
+                                # Insert into replies table for dashboard visibility (dedup by Message-ID)
                                 try:
-                                    supabase.table('replies').insert({
-                                        'contact_id': contact_id,
-                                        'project_id': project_id,
-                                        'sender_email': sender,
-                                        'recipient_email': acct_email,
-                                        'subject': subject_hdr[:200],
-                                        'body': body_snippet[:2000],
-                                        'sentiment': 'neutral',
-                                        'received_at': datetime.now().isoformat()
-                                    }).execute()
+                                    if email_message_id:
+                                        existing = supabase.table('replies').select('id').eq('message_id', email_message_id).execute()
+                                        if existing.data:
+                                            log(f"  ⏭️ [DEDUP] Reply from {matched_email} already recorded (Message-ID exists). Skipping insert.")
+                                        else:
+                                            supabase.table('replies').insert({
+                                                'contact_id': contact_id,
+                                                'project_id': project_id,
+                                                'sender_email': sender,
+                                                'recipient_email': acct_email,
+                                                'subject': subject_hdr[:200],
+                                                'body': body_snippet[:2000],
+                                                'sentiment': 'neutral',
+                                                'message_id': email_message_id,
+                                                'received_at': datetime.now().isoformat()
+                                            }).execute()
+                                    else:
+                                        existing = supabase.table('replies').select('id').eq('contact_id', contact_id).eq('sender_email', sender).eq('subject', subject_hdr[:200]).execute()
+                                        if not existing.data:
+                                            supabase.table('replies').insert({
+                                                'contact_id': contact_id,
+                                                'project_id': project_id,
+                                                'sender_email': sender,
+                                                'recipient_email': acct_email,
+                                                'subject': subject_hdr[:200],
+                                                'body': body_snippet[:2000],
+                                                'sentiment': 'neutral',
+                                                'received_at': datetime.now().isoformat()
+                                            }).execute()
                                 except Exception as insert_err:
                                     log(f"  ⚠️ Could not insert reply into replies table: {insert_err}")
                         elif not contact_id:
@@ -290,16 +333,35 @@ def check_all_replies(days=7, logger_callback=None, skip_db_update=False):
                             log(f"  ⏸️ [AUTO_REPLY] {matched_email} ({matched_company}) | {reason}")
                             if not skip_db_update:
                                 try:
-                                    supabase.table('replies').insert({
-                                        'contact_id': contact_id,
-                                        'project_id': project_id,
-                                        'sender_email': sender,
-                                        'recipient_email': acct_email,
-                                        'subject': subject_hdr[:200],
-                                        'body': body_snippet[:2000],
-                                        'sentiment': 'neutral',
-                                        'received_at': datetime.now().isoformat()
-                                    }).execute()
+                                    if email_message_id:
+                                        existing = supabase.table('replies').select('id').eq('message_id', email_message_id).execute()
+                                        if existing.data:
+                                            log(f"  ⏭️ [DEDUP] Auto-reply from {sender} already recorded. Skipping insert.")
+                                        else:
+                                            supabase.table('replies').insert({
+                                                'contact_id': contact_id,
+                                                'project_id': project_id,
+                                                'sender_email': sender,
+                                                'recipient_email': acct_email,
+                                                'subject': subject_hdr[:200],
+                                                'body': body_snippet[:2000],
+                                                'sentiment': 'neutral',
+                                                'message_id': email_message_id,
+                                                'received_at': datetime.now().isoformat()
+                                            }).execute()
+                                    else:
+                                        existing = supabase.table('replies').select('id').eq('contact_id', contact_id).eq('sender_email', sender).eq('subject', subject_hdr[:200]).execute()
+                                        if not existing.data:
+                                            supabase.table('replies').insert({
+                                                'contact_id': contact_id,
+                                                'project_id': project_id,
+                                                'sender_email': sender,
+                                                'recipient_email': acct_email,
+                                                'subject': subject_hdr[:200],
+                                                'body': body_snippet[:2000],
+                                                'sentiment': 'neutral',
+                                                'received_at': datetime.now().isoformat()
+                                            }).execute()
                                 except Exception as insert_err:
                                     log(f"  ⚠️ Could not insert auto-reply into replies table: {insert_err}")
                         else:
